@@ -80,16 +80,15 @@ func Resolve(root, current, href string) (Target, error) {
 	p, frag, _ := strings.Cut(href, "#")
 	p, _, _ = strings.Cut(p, "?")
 	p = unescape(p)
-	// Touching \\server\share makes Windows authenticate to that server,
-	// leaking the user's NTLM hash to whoever wrote the document. Only the
-	// share the document itself is on may be used.
-	if share := uncShare(p); share != "" && !strings.EqualFold(share, uncShare(current)) {
-		return Target{}, fmt.Errorf("%w: network path %s", ErrUnsupported, share)
+	// A network path is judged on the link's own text too, before joining
+	// it to anything (CheckPath below judges the final path).
+	if err := checkText(p, current); err != nil && uncShare(p) != "" {
+		return Target{}, err
 	}
 	p = filepath.FromSlash(p)
 	switch {
-	case filepath.IsAbs(p) && filepath.VolumeName(p) != "":
-		// C:\docs\a.md or \\server\share\a.md
+	case filepath.VolumeName(p) != "":
+		// C:\docs\a.md, or a network path that CheckPath rules on
 	case strings.HasPrefix(p, string(filepath.Separator)):
 		if root == "" {
 			root = filepath.Dir(current)
@@ -98,11 +97,8 @@ func Resolve(root, current, href string) (Target, error) {
 	default:
 		p = filepath.Join(filepath.Dir(current), p)
 	}
-
-	// The same rule on the final path, by its volume as Windows parses it:
-	// a drive letter, or the document's own share.
-	if vol := filepath.VolumeName(p); vol != "" && !isDrive(vol) && !strings.EqualFold(vol, filepath.VolumeName(current)) {
-		return Target{}, fmt.Errorf("%w: network path %s", ErrUnsupported, vol)
+	if err := CheckPath(p, current); err != nil {
+		return Target{}, err
 	}
 
 	fi, err := os.Stat(p)

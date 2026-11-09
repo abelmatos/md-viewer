@@ -2,10 +2,7 @@ package doc
 
 import (
 	"encoding/base64"
-	"errors"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -27,7 +24,8 @@ var imageTypes = map[string]string{
 
 // ImageDataURI reads the local image src, referenced from the document at
 // current, and returns it as a data: URI. The page has no file access of its
-// own, so local images reach it this way. Only image files are read.
+// own, so local images reach it this way. Only image files inside root, or
+// inside current's folder, are read.
 func ImageDataURI(root, current, src string) (string, error) {
 	t, err := Resolve(root, current, src)
 	if err != nil {
@@ -40,17 +38,14 @@ func ImageDataURI(root, current, src string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("not an image: %s", t.Path)
 	}
-	f, err := os.Open(t.Path)
+	// Like GitHub, images come from the open folder (or the document's own
+	// folder), not from anywhere on the drive.
+	if !Within(root, t.Path) && !Within(filepath.Dir(current), t.Path) {
+		return "", fmt.Errorf("%w: image outside the folder: %s", ErrUnsupported, src)
+	}
+	data, err := ReadRegular(t.Path, MaxImageSize)
 	if err != nil {
 		return "", err
-	}
-	defer func() { _ = f.Close() }()
-	data, err := io.ReadAll(io.LimitReader(f, MaxImageSize+1))
-	if err != nil {
-		return "", err
-	}
-	if len(data) > MaxImageSize {
-		return "", errors.New("image too large")
 	}
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }

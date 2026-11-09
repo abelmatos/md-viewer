@@ -4,8 +4,12 @@ package doc
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"regexp"
+	"sync"
+	"time"
 
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	"github.com/alecthomas/chroma/v2/styles"
@@ -17,10 +21,25 @@ import (
 	"github.com/yuin/goldmark/renderer/html"
 )
 
+// MaxDocSize is the largest Markdown file the viewer renders. Crafted input
+// can make rendering take time that grows with the square of its size, so
+// this stays well below what a real document needs.
+const MaxDocSize = 2 << 20
+
+// RenderTimeout bounds how long the viewer waits for one document.
+const RenderTimeout = 10 * time.Second
+
+// ErrTooSlow is returned when rendering takes longer than RenderTimeout.
+var ErrTooSlow = errors.New("the document took too long to render")
+
 // Renderer turns Markdown into sanitised HTML. It is safe for concurrent use.
 type Renderer struct {
-	md     goldmark.Markdown
-	policy *bluemonday.Policy
+	md      goldmark.Markdown
+	policy  *bluemonday.Policy
+	timeout time.Duration
+
+	mu   sync.Mutex
+	slow map[[32]byte]bool // sources that timed out; refused right away
 }
 
 // NewRenderer returns a renderer for GitHub-flavoured Markdown (tables, task
@@ -39,7 +58,7 @@ func NewRenderer() *Renderer {
 		// It is let through here and sanitised below.
 		goldmark.WithRendererOptions(html.WithUnsafe()),
 	)
-	return &Renderer{md: md, policy: newPolicy()}
+	return &Renderer{md: md, policy: newPolicy(), timeout: RenderTimeout}
 }
 
 var (
@@ -48,10 +67,32 @@ var (
 	checkbox   = regexp.MustCompile(`(?i)^checkbox$`)
 )
 
-// newPolicy allows what GitHub renders and drops scripts, event handlers,
-// styles, forms and iframes.
+// newPolicy is an explicit allowlist of what GitHub renders: bluemonday's
+// UGC policy without image maps, plus <kbd>, task lists and the attributes
+// highlighted code, footnotes and centred README headers use. Scripts, event
+// handlers, styles, forms, iframes and image maps are dropped. An <area>
+// click would navigate the page itself; the page must only ever show
+// documents through Go.
 func newPolicy() *bluemonday.Policy {
-	p := bluemonday.UGCPolicy()
+	p := bluemonday.NewPolicy()
+	p.AllowStandardAttributes() // dir, id, lang, title
+	p.AllowStandardURLs()       // http, https, mailto and relative URLs only
+
+	p.AllowElements("article", "aside", "figure", "figcaption", "section", "summary", "hgroup")
+	p.AllowAttrs("open").Matching(regexp.MustCompile(`(?i)^(|open)$`)).OnElements("details")
+	p.AllowElements("h1", "h2", "h3", "h4", "h5", "h6")
+	p.AllowElements("br", "div", "hr", "p", "span", "wbr")
+	p.AllowAttrs("cite").OnElements("blockquote", "q")
+	p.AllowAttrs("href").OnElements("a")
+	p.AllowElements("abbr", "acronym", "cite", "code", "dfn", "em", "kbd", "mark", "s", "samp",
+		"strong", "sub", "sup", "var", "b", "i", "pre", "small", "strike", "tt", "u", "del", "ins")
+	p.AllowAttrs("datetime").Matching(bluemonday.ISO8601).OnElements("time", "del", "ins")
+	p.AllowAttrs("dir").Matching(bluemonday.Direction).OnElements("bdi", "bdo")
+	p.AllowElements("rp", "rt", "ruby")
+	p.AllowLists()
+	p.AllowTables()
+	p.AllowImages() // img with src, alt, width, height; no usemap
+
 	p.AllowAttrs("class").Matching(classNames).OnElements("pre", "code", "span", "div")
 	p.AllowAttrs("align").Matching(alignments).OnElements("p", "div", "img", "h1", "h2", "h3", "h4", "h5", "h6", "td", "th")
 	// GFM task lists.
@@ -62,8 +103,42 @@ func newPolicy() *bluemonday.Policy {
 	return p
 }
 
-// Render converts src to sanitised HTML.
+// Render converts src to sanitised HTML, giving up after the renderer's
+// timeout. goldmark can't be cancelled, so a render that times out keeps a
+// CPU core busy until it finishes; the same content is then refused at once,
+// so retrying can't pile up more of them.
 func (r *Renderer) Render(src []byte) (string, error) {
+	sum := sha256.Sum256(src)
+	r.mu.Lock()
+	known := r.slow[sum]
+	r.mu.Unlock()
+	if known {
+		return "", ErrTooSlow
+	}
+	type result struct {
+		html string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		h, err := r.render(src)
+		done <- result{h, err}
+	}()
+	select {
+	case res := <-done:
+		return res.html, res.err
+	case <-time.After(r.timeout):
+		r.mu.Lock()
+		if r.slow == nil {
+			r.slow = map[[32]byte]bool{}
+		}
+		r.slow[sum] = true
+		r.mu.Unlock()
+		return "", ErrTooSlow
+	}
+}
+
+func (r *Renderer) render(src []byte) (string, error) {
 	var buf bytes.Buffer
 	if err := r.md.Convert(src, &buf); err != nil {
 		return "", fmt.Errorf("render markdown: %w", err)

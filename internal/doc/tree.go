@@ -6,11 +6,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
-// MaxTreeFiles caps how many Markdown files the sidebar lists, so opening a
-// huge folder stays fast.
-const MaxTreeFiles = 5000
+// Limits for listing a folder, so opening a huge one (or a whole drive)
+// stays fast: Markdown files listed, entries visited, and time spent.
+const (
+	MaxTreeFiles   = 5000
+	MaxTreeEntries = 100000
+	MaxTreeTime    = 3 * time.Second
+)
 
 // Node is a folder or Markdown file in the sidebar.
 type Node struct {
@@ -22,12 +27,18 @@ type Node struct {
 
 // Tree lists the Markdown files under root, keeping only folders that contain
 // some. Hidden folders (.git, .github…) and node_modules are skipped.
-// truncated is true when more than MaxTreeFiles files were found.
+// truncated is true when a limit cut the listing short.
 func Tree(root string) (tree *Node, truncated bool, err error) {
 	tree = &Node{Name: filepath.Base(root), Path: root, Dir: true}
 	dirs := map[string]*Node{root: tree}
-	count := 0
+	count, visited := 0, 0
+	deadline := time.Now().Add(MaxTreeTime)
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		visited++
+		if visited > MaxTreeEntries || (visited%256 == 0 && time.Now().After(deadline)) {
+			truncated = true
+			return filepath.SkipAll
+		}
 		if err != nil {
 			if p == root {
 				return err

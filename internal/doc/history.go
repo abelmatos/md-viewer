@@ -60,3 +60,19 @@ func (h *History) CanBack() bool { return len(h.entries) > 0 && h.pos > 0 }
 
 // CanForward reports whether there is a next entry.
 func (h *History) CanForward() bool { return h.pos < len(h.entries)-1 }
+
+// Peek returns the entry delta steps from the current one without moving.
+func (h *History) Peek(delta int) (Entry, bool) {
+	i := h.pos + delta
+	if len(h.entries) == 0 || i < 0 || i >= len(h.entries) {
+		return Entry{}, false
+	}
+	return h.entries[i], true
+}
+
+// Move moves delta steps, if that entry exists.
+func (h *History) Move(delta int) {
+	if _, ok := h.Peek(delta); ok {
+		h.pos += delta
+	}
+}
