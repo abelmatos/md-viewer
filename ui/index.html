@@ -15,9 +15,10 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d;
-    --side-bg: #151b23; --hover: #212830; --active: #1c2d41; --active-fg: #79c0ff;
-    --link: #4493f8; --code-bg: #151b23; --quote: #9198a1; --error-bg: #3c1618; --error-fg: #ffa198;
+    /* Neutral near-black greys; blue only for links and the selected file. */
+    --bg: #0f0f0f; --fg: #e4e4e4; --muted: #999999; --border: #2b2b2b;
+    --side-bg: #171717; --hover: #242424; --active: #262626; --active-fg: #6cb6ff;
+    --link: #6cb6ff; --code-bg: #1a1a1a; --quote: #a0a0a0; --error-bg: #3a1414; --error-fg: #ff9a9a;
   }
 }
 * { box-sizing: border-box; }
@@ -25,10 +26,12 @@ html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--fg); font: 14px/1.5 var(--font); display: grid;
   grid-template-rows: auto 1fr; grid-template-columns: var(--side-w, 280px) 1fr; overflow: hidden; }
 body.no-side { grid-template-columns: 0 1fr; }
-body.no-side #side { display: none; }
+body.no-side #side, body.no-side #resizer { display: none; }
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing #main { pointer-events: none; }
 
 #bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 4px; padding: 6px 8px;
-  border-bottom: 1px solid var(--border); background: var(--side-bg); user-select: none; }
+  border-bottom: 1px solid var(--border); background: var(--side-bg); color: var(--fg); user-select: none; }
 #bar button { font: inherit; color: var(--fg); background: transparent; border: 1px solid transparent;
   border-radius: 6px; padding: 4px 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
 #bar button:hover:not(:disabled) { background: var(--hover); }
@@ -39,7 +42,10 @@ body.no-side #side { display: none; }
   direction: rtl; text-align: left; padding: 0 8px; }
 
 /* Explicit columns: a hidden sidebar must not pull #main into its slot. */
-#side { grid-column: 1; overflow: auto; border-right: 1px solid var(--border); background: var(--side-bg); padding: 8px 4px; font-size: 13px; }
+#side { grid-column: 1; grid-row: 2; overflow: auto; border-right: 1px solid var(--border); background: var(--side-bg); padding: 8px 4px; font-size: 13px; }
+/* Drag handle on the sidebar's right edge, overlapping its border. */
+#resizer { grid-column: 1; grid-row: 2; justify-self: end; width: 7px; margin-right: -4px; z-index: 1; cursor: col-resize; }
+#resizer:hover, body.resizing #resizer { background: var(--link); opacity: .5; }
 #side .root { font-weight: 600; padding: 2px 8px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #side ul { list-style: none; margin: 0; padding: 0 0 0 12px; }
 #side > ul { padding-left: 0; }
@@ -53,7 +59,7 @@ body.no-side #side { display: none; }
 #side li > span.active { background: var(--active); color: var(--active-fg); font-weight: 600; }
 #side .note { color: var(--muted); padding: 8px; }
 
-#main { grid-column: 2; overflow: auto; position: relative; outline: none; }
+#main { grid-column: 2; grid-row: 2; overflow: auto; position: relative; outline: none; }
 #doc { max-width: 900px; margin: 0 auto; padding: 32px 40px 80px; }
 
 #welcome { display: none; max-width: 520px; margin: 15vh auto 0; text-align: center; color: var(--muted); padding: 0 16px; }
@@ -117,6 +123,7 @@ body.empty #doc { display: none; }
   <span id="path"></span>
 </div>
 <nav id="side"></nav>
+<div id="resizer" title="Drag to resize, double-click to reset"></div>
 <main id="main" tabindex="-1">
   <section id="welcome">
     <h1>MD Viewer</h1>
@@ -277,7 +284,7 @@ const actions = {
   // mdDeliver or mdFail.
   "open-file": () => window.mdPickFile(),
   "open-folder": () => window.mdPickFolder(),
-  "toggle-side": () => document.body.classList.toggle("no-side"),
+  "toggle-side": () => { document.body.classList.toggle("no-side"); saveLayout(); },
 };
 for (const id of ["back", "forward", "reload", "open-file", "open-folder", "toggle-side"]) {
   $(id).addEventListener("click", actions[id]);
@@ -319,6 +326,59 @@ document.addEventListener("mouseup", (e) => {
 });
 // Dropping a file would replace the app with the raw file.
 for (const t of ["dragover", "drop"]) document.addEventListener(t, (e) => e.preventDefault());
+
+// Paint the window's title bar in the toolbar's colours, now and whenever
+// Windows switches between light and dark.
+const darkQuery = matchMedia("(prefers-color-scheme: dark)");
+function syncTheme() {
+  const rgb = (c) => (c.match(/\d+/g) || [0, 0, 0]).slice(0, 3).map(Number);
+  const bar = getComputedStyle($("bar"));
+  window.mdTheme({
+    dark: darkQuery.matches,
+    bg: rgb(bar.backgroundColor),
+    fg: rgb(bar.color),
+    border: rgb(bar.borderBottomColor),
+  }).catch(() => {});
+}
+darkQuery.addEventListener("change", syncTheme);
+syncTheme();
+
+// Sidebar width and visibility, kept between launches by Go.
+// Width: at least MIN_SIDE, at most half the window.
+const DEFAULT_SIDE = 280, MIN_SIDE = 180;
+let sideWidth = DEFAULT_SIDE;
+function setSideWidth(w) {
+  sideWidth = Math.round(Math.max(MIN_SIDE, Math.min(w, innerWidth / 2)));
+  document.body.style.setProperty("--side-w", sideWidth + "px");
+}
+function saveLayout() {
+  window.mdSaveSettings({
+    sideWidth: sideWidth === DEFAULT_SIDE ? 0 : sideWidth,
+    sideHidden: document.body.classList.contains("no-side"),
+  }).catch(() => {});
+}
+const resizer = $("resizer");
+resizer.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  resizer.setPointerCapture(e.pointerId);
+  document.body.classList.add("resizing");
+});
+resizer.addEventListener("pointermove", (e) => {
+  if (resizer.hasPointerCapture(e.pointerId)) setSideWidth(e.clientX);
+});
+resizer.addEventListener("pointerup", (e) => {
+  if (!resizer.hasPointerCapture(e.pointerId)) return;
+  resizer.releasePointerCapture(e.pointerId);
+  document.body.classList.remove("resizing");
+  saveLayout();
+});
+resizer.addEventListener("dblclick", () => { setSideWidth(DEFAULT_SIDE); saveLayout(); });
+addEventListener("resize", () => setSideWidth(sideWidth));
+window.mdSettings().then((s) => {
+  if (s.sideWidth) setSideWidth(s.sideWidth);
+  document.body.classList.toggle("no-side", !!s.sideHidden);
+}).catch(() => {});
 
 window.mdDeliver = render;
 window.mdFail = toast;

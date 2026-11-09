@@ -56,7 +56,9 @@ func run(arg string, debug bool) int {
 	defer wv.Destroy()
 
 	p := &winPlatform{wv: wv}
+	setDarkTitleBar(p.hwnd(), systemDark())
 	app := NewApp(p)
+	settings := defaultSettingsStore()
 	bindings := map[string]any{
 		"mdStart": func() (*View, error) {
 			if arg == "" {
@@ -70,6 +72,13 @@ func run(arg string, debug bool) int {
 		"mdForward":  app.Forward,
 		"mdReload":   app.Reload,
 		"mdImage":    app.Image,
+		"mdTheme":    func(t themeColors) { applyTheme(p.hwnd(), t) },
+		"mdSettings": settings.Load,
+		"mdSaveSettings": func(v Settings) {
+			if err := settings.Save(v); err != nil {
+				p.fail(fmt.Errorf("save settings: %w", err))
+			}
+		},
 		// Dialogs run a modal loop, which must not happen inside a WebView2
 		// event handler, where bindings run. They are queued to run after it
 		// returns and deliver their result to the page themselves.
@@ -99,6 +108,15 @@ func windowSize() (w, h uint) {
 	w = min(uint(windowWidth*dpi/96), uint(sw*9/10))
 	h = min(uint(windowHeight*dpi/96), uint(sh*9/10))
 	return w, h
+}
+
+// defaultSettingsStore uses %APPDATA%\md-viewer\settings.json.
+func defaultSettingsStore() settingsStore {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		dir = os.TempDir()
+	}
+	return settingsStore{path: filepath.Join(dir, "md-viewer", "settings.json")}
 }
 
 // webviewDataDir keeps WebView2's profile out of the exe's folder.

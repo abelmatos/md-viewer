@@ -197,3 +197,28 @@ func TestShellHTML(t *testing.T) {
 		t.Error("nonce reused")
 	}
 }
+
+func TestSettingsStore(t *testing.T) {
+	s := settingsStore{path: filepath.Join(t.TempDir(), "sub", "settings.json")}
+	if got := s.Load(); got != (Settings{}) {
+		t.Fatalf("missing file = %+v", got)
+	}
+	if err := s.Save(Settings{SideWidth: 340, SideHidden: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Load(); got != (Settings{SideWidth: 340, SideHidden: true}) {
+		t.Fatalf("round trip = %+v", got)
+	}
+	if err := s.Save(Settings{SideWidth: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Load(); got.SideWidth != 0 {
+		t.Fatalf("out-of-range width kept: %+v", got)
+	}
+	if err := os.WriteFile(s.path, []byte("{bad"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Load(); got != (Settings{}) {
+		t.Fatalf("corrupt file = %+v", got)
+	}
+}
