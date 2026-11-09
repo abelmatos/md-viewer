@@ -52,9 +52,12 @@ jobs:
         run: go test -run '^$' -fuzz FuzzResolve -fuzztime 30s ./internal/doc
 
       - name: Known vulnerabilities
+        # Install for the runner first: GOOS=windows go run would build a
+        # Windows binary.
         run: |
-          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
-          GOOS=windows go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          govulncheck ./...
+          GOOS=windows govulncheck ./...
 
       - name: Windows resources match winres/
         run: |
