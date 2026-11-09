@@ -134,7 +134,7 @@ func TestResolve(t *testing.T) {
 		}
 	}
 	// Network paths would make Windows authenticate to the server.
-	for _, href := range []string{`\\evil\share\x.png`, "//evil/share/x.md", "%5C%5Cevil%5Cshare%5Cx.png", `\\?\UNC\evil\s\x`, "/\\evil/s/x"} {
+	for _, href := range []string{`\\evil\share\x.png`, "//evil/share/x.md", "%5C%5Cevil%5Cshare%5Cx.png", `\\%3F\UNC\evil\s\x`, "/\\evil/s/x", `\%3F%3F\UNC\evil\s\x.png`, "/%3F%3F/UNC/evil/s/x.png"} {
 		if _, err := Resolve(root, cur, href); !errors.Is(err, ErrUnsupported) {
 			t.Errorf("Resolve(%q) error = %v, want ErrUnsupported", href, err)
 		}
@@ -163,7 +163,7 @@ func TestUNCShare(t *testing.T) {
 		}
 	}
 	// A document on a share may link within that share.
-	if _, err := Resolve("", `\\srv\docs\a.md`, "//SRV/docs/b.md"); errors.Is(err, ErrUnsupported) {
+	if _, err := Resolve("", `\\localhost\no-such-share\a.md`, "//LOCALHOST/no-such-share/b.md"); errors.Is(err, ErrUnsupported) {
 		t.Errorf("link within the same share rejected: %v", err)
 	}
 }

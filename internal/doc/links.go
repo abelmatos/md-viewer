@@ -99,6 +99,12 @@ func Resolve(root, current, href string) (Target, error) {
 		p = filepath.Join(filepath.Dir(current), p)
 	}
 
+	// The same rule on the final path, by its volume as Windows parses it:
+	// a drive letter, or the document's own share.
+	if vol := filepath.VolumeName(p); vol != "" && !isDrive(vol) && !strings.EqualFold(vol, filepath.VolumeName(current)) {
+		return Target{}, fmt.Errorf("%w: network path %s", ErrUnsupported, vol)
+	}
+
 	fi, err := os.Stat(p)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -122,6 +128,10 @@ func Resolve(root, current, href string) (Target, error) {
 // style, including \\?\UNC\ paths), or "" for any other path.
 func uncShare(p string) string {
 	isSep := func(c byte) bool { return c == '\\' || c == '/' }
+	// \??\ is the NT object namespace, which reaches UNC\ and devices too.
+	if len(p) >= 4 && isSep(p[0]) && p[1] == '?' && p[2] == '?' && isSep(p[3]) {
+		return `\??\`
+	}
 	if len(p) < 2 || !isSep(p[0]) || !isSep(p[1]) {
 		return ""
 	}
@@ -140,6 +150,11 @@ func uncShare(p string) string {
 		return `\\` + parts[0]
 	}
 	return `\\` + parts[0] + `\` + parts[1]
+}
+
+// isDrive reports whether vol is a plain drive letter such as "C:".
+func isDrive(vol string) bool {
+	return len(vol) == 2 && vol[1] == ':' && (vol[0]|0x20 >= 'a' && vol[0]|0x20 <= 'z')
 }
 
 func unescape(s string) string {
