@@ -14,10 +14,10 @@ const appTitle = "MD Viewer"
 //go:embed ui/index.html
 var indexHTML string
 
-// shellHTML returns the page with the code-highlighting styles inlined and a
-// fresh nonce, so only the page's own script runs: the Content Security
-// Policy blocks any script that slips into a document.
-func shellHTML() (string, error) {
+// shellHTML returns the page with the code-highlighting styles inlined, the
+// bridge key, and a fresh nonce, so only the page's own script runs: the
+// Content Security Policy blocks any script that slips into a document.
+func shellHTML(key string) (string, error) {
 	css, err := doc.CodeCSS()
 	if err != nil {
 		return "", err
@@ -27,5 +27,5 @@ func shellHTML() (string, error) {
 		return "", err
 	}
 	nonce := base64.RawURLEncoding.EncodeToString(b)
-	return strings.NewReplacer("{{NONCE}}", nonce, "{{CODE_CSS}}", css).Replace(indexHTML), nil
+	return strings.NewReplacer("{{NONCE}}", nonce, "{{CODE_CSS}}", css, "{{KEY}}", key).Replace(indexHTML), nil
 }

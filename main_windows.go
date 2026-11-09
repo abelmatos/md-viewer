@@ -5,10 +5,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
-	webview2 "github.com/jchv/go-webview2"
+	"github.com/jchv/go-webview2/webviewloader"
 	"golang.org/x/sys/windows"
 )
 
@@ -21,6 +22,12 @@ const (
 
 const webView2Download = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
 
+// Page background before the page draws, matching --bg in ui/index.html.
+var (
+	darkBg  = [3]int{0x0f, 0x0f, 0x0f}
+	lightBg = [3]int{0xff, 0xff, 0xff}
+)
+
 func run(arg string, debug bool) int {
 	// Resolve implicitly loaded DLLs from System32 only, so a planted
 	// WebView2Loader.dll next to the exe (e.g. in Downloads) is never loaded;
@@ -29,85 +36,69 @@ func run(arg string, debug bool) int {
 		showError(fmt.Sprintf("Can't restrict DLL loading: %v", err))
 		return 1
 	}
-	page, err := shellHTML()
-	if err != nil {
-		showError(err.Error())
-		return 1
-	}
+	closeLog := openLog()
+	defer closeLog()
+	log.Printf("md-viewer %s starting", version)
 
-	w, h := windowSize()
-	wv := webview2.NewWithOptions(webview2.WebViewOptions{
-		Debug:     debug,
-		DataPath:  webviewDataDir(),
-		AutoFocus: true,
-		WindowOptions: webview2.WindowOptions{
-			Title:  appTitle,
-			Width:  w,
-			Height: h,
-			IconId: iconID,
-			Center: true,
-		},
-	})
-	if wv == nil {
+	v, err := webviewloader.GetInstalledVersion()
+	if err != nil || v == "" {
+		log.Printf("WebView2 runtime not found: %v", err)
 		showError("MD Viewer needs the Microsoft Edge WebView2 Runtime, which comes with Windows 11 " +
 			"and recent Windows 10.\n\nInstall it from " + webView2Download)
 		return 1
 	}
-	defer wv.Destroy()
+	log.Printf("WebView2 runtime %s", v)
 
-	p := &winPlatform{wv: wv}
-	setDarkTitleBar(p.hwnd(), systemDark())
-	app := NewApp(p)
-	settings := defaultSettingsStore()
-	bindings := map[string]any{
-		"mdStart": func() (*View, error) {
-			if arg == "" {
-				return &View{Empty: true}, nil
-			}
-			return app.Open(arg)
-		},
-		"mdNavigate": app.Navigate,
-		"mdShow":     app.Show,
-		"mdBack":     app.Back,
-		"mdForward":  app.Forward,
-		"mdReload":   app.Reload,
-		"mdImage":    app.Image,
-		"mdTheme":    func(t themeColors) { applyTheme(p.hwnd(), t) },
-		"mdSettings": settings.Load,
-		"mdSaveSettings": func(v Settings) {
-			if err := settings.Save(v); err != nil {
-				p.fail(fmt.Errorf("save settings: %w", err))
-			}
-		},
-		// Dialogs run a modal loop, which must not happen inside a WebView2
-		// event handler, where bindings run. They are queued to run after it
-		// returns and deliver their result to the page themselves.
-		"mdPickFile":   func() { p.later(app.PickFile) },
-		"mdPickFolder": func() { p.later(app.PickFolder) },
+	dark := systemDark()
+	bg := lightBg
+	if dark {
+		bg = darkBg
 	}
-	for name, f := range bindings {
-		if err := wv.Bind(name, f); err != nil {
-			showError(fmt.Sprintf("bind %s: %v", name, err))
-			return 1
+	hwnd, err := createWindow(colorRef(bg))
+	if err != nil {
+		fatal(err)
+		return 1
+	}
+	setDarkTitleBar(hwnd, dark)
+	w := &window{hwnd: hwnd}
+	theWindow = w
+
+	bridge, err := NewBridge(w.post, func(js string) { w.browser.Eval(js) })
+	if err != nil {
+		fatal(err)
+		return 1
+	}
+	if w.page, err = shellHTML(bridge.Key()); err != nil {
+		fatal(err)
+		return 1
+	}
+	p := &winPlatform{w: w, notify: bridge.Notify}
+	bridge.RegisterApp(NewApp(p), p, defaultSettingsStore(), arg)
+	bridge.register("mdTheme", func(params []json.RawMessage) (any, error) {
+		var t themeColors
+		if err := decode(params, &t); err != nil {
+			return nil, err
 		}
+		w.post(func() { applyTheme(hwnd, t) })
+		return nil, nil
+	})
+
+	startupBegin()
+	if err := w.embed(webviewDataDir(), debug, bg, bridge.Handle); err != nil {
+		fatal(err)
+		return 1
 	}
-	wv.SetHtml(page)
-	wv.Run()
+	w.load()
+	w.loop()
+	log.Print("closed")
 	return 0
 }
 
-// windowSize scales the default size to the screen's DPI, keeping the window
-// within 90% of the screen.
-func windowSize() (w, h uint) {
-	dpi, _, _ := procGetDpiForSystem.Call()
-	if dpi == 0 {
-		dpi = 96
-	}
-	sw, _, _ := procGetSystemMetrics.Call(smCxScreen)
-	sh, _, _ := procGetSystemMetrics.Call(smCyScreen)
-	w = min(uint(windowWidth*dpi/96), uint(sw*9/10))
-	h = min(uint(windowHeight*dpi/96), uint(sh*9/10))
-	return w, h
+// fatal logs err and tells the user, pointing to the log.
+func fatal(err error) {
+	startupDone() // one message box is enough
+	log.Printf("fatal: %v", err)
+	showError(fmt.Sprintf("MD Viewer couldn't start: %v\n\nLog: %s", err, logPath()))
 }
 
 // defaultSettingsStore uses %APPDATA%\md-viewer\settings.json.
@@ -121,72 +112,52 @@ func defaultSettingsStore() settingsStore {
 
 // webviewDataDir keeps WebView2's profile out of the exe's folder.
 func webviewDataDir() string {
-	base, err := os.UserCacheDir() // %LOCALAPPDATA%
+	return filepath.Join(localDir(), "WebView2")
+}
+
+// localDir is %LOCALAPPDATA%\md-viewer.
+func localDir() string {
+	base, err := os.UserCacheDir()
 	if err != nil {
 		base = os.TempDir()
 	}
-	return filepath.Join(base, "md-viewer", "WebView2")
+	return filepath.Join(base, "md-viewer")
 }
 
-// winPlatform implements Platform with Win32 calls.
+// winPlatform implements Platform with Win32 calls. Its methods may be
+// called from any goroutine (the dialogs from the UI thread) and hand window
+// work to the UI thread.
 type winPlatform struct {
-	wv webview2.WebView
+	w      *window
+	notify func(error)
 }
 
-func (p *winPlatform) hwnd() uintptr { return uintptr(p.wv.Window()) }
+func (p *winPlatform) SetTitle(title string) { p.w.post(func() { p.w.setTitle(title) }) }
 
-func (p *winPlatform) SetTitle(title string) { p.wv.SetTitle(title) }
+func (p *winPlatform) PickFile() (string, error) { return pickPath(p.w.hwnd, false) }
 
-func (p *winPlatform) PickFile() (string, error) { return pickPath(p.hwnd(), false) }
-
-func (p *winPlatform) PickFolder() (string, error) { return pickPath(p.hwnd(), true) }
+func (p *winPlatform) PickFolder() (string, error) { return pickPath(p.w.hwnd, true) }
 
 func (p *winPlatform) OpenURL(url string) error {
-	p.wv.Dispatch(func() {
-		if err := shellOpen(p.hwnd(), url, ""); err != nil {
-			p.fail(fmt.Errorf("open %s: %w", url, err))
+	p.w.post(func() {
+		if err := shellOpen(p.w.hwnd, url, ""); err != nil {
+			p.notify(fmt.Errorf("open %s: %w", url, err))
 		}
 	})
 	return nil
 }
 
 func (p *winPlatform) Reveal(path string) error {
-	p.wv.Dispatch(func() {
+	p.w.post(func() {
 		var err error
 		if fi, statErr := os.Stat(path); statErr == nil && fi.IsDir() {
-			err = shellOpen(p.hwnd(), path, "") // opens the folder in Explorer
+			err = shellOpen(p.w.hwnd, path, "") // opens the folder in Explorer
 		} else {
-			err = shellOpen(p.hwnd(), explorerPath(), `/select,"`+path+`"`)
+			err = shellOpen(p.w.hwnd, explorerPath(), `/select,"`+path+`"`)
 		}
 		if err != nil {
-			p.fail(fmt.Errorf("show %s: %w", path, err))
+			p.notify(fmt.Errorf("show %s: %w", path, err))
 		}
 	})
 	return nil
-}
-
-// later runs f after the current event handler returns and sends its view or
-// error to the page.
-func (p *winPlatform) later(f func() (*View, error)) {
-	p.wv.Dispatch(func() {
-		v, err := f()
-		if err != nil {
-			p.fail(err)
-			return
-		}
-		if v == nil {
-			return // cancelled
-		}
-		b, err := json.Marshal(v)
-		if err != nil {
-			p.fail(err)
-			return
-		}
-		p.wv.Eval("window.mdDeliver(" + string(b) + ")")
-	})
-}
-
-func (p *winPlatform) fail(err error) {
-	b, _ := json.Marshal(err.Error())
-	p.wv.Eval("window.mdFail(" + string(b) + ")")
 }

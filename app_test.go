@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/abelmatos/md-viewer/internal/doc"
 )
 
 type fakePlatform struct {
@@ -165,11 +168,75 @@ func TestReloadAndImage(t *testing.T) {
 	}
 }
 
-func TestPickCancelled(t *testing.T) {
-	_, p, a := setup(t)
-	p.pick = ""
-	if v, err := a.PickFolder(); v != nil || err != nil {
-		t.Fatalf("cancelled pick = %+v, %v", v, err)
+func TestShowChecksPath(t *testing.T) {
+	root, _, a := setup(t)
+	must(t)(a.Open(root))
+	must(t)(a.Show(filepath.Join(root, "notes", "a.md"), 0))
+	outside := filepath.Join(t.TempDir(), "x.md")
+	if err := os.WriteFile(outside, []byte("# secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{
+		outside,                         // outside the open folder
+		filepath.Join(root, "logo.png"), // not Markdown
+		filepath.Join(root, "docs", "build.sh"),
+		"docs/guide.md",     // relative
+		`\\evil\share\x.md`, // network path
+		filepath.Join(root, "..", filepath.Base(root), "..", "x.md"),
+	} {
+		if _, err := a.Show(p, 0); err == nil {
+			t.Errorf("Show(%q) succeeded", p)
+		}
+	}
+}
+
+func TestFailedOpenKeepsState(t *testing.T) {
+	root, _, a := setup(t)
+	must(t)(a.Open(root))
+	// A folder whose README can't be rendered: over the size limit.
+	other := t.TempDir()
+	big := filepath.Join(other, "README.md")
+	if err := os.WriteFile(big, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(big, doc.MaxDocSize+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Open(other); err == nil {
+		t.Fatal("opened a README over the size limit")
+	}
+	// Still on the first folder: a file in it doesn't resend the tree, and
+	// Show accepts its files.
+	v := must(t)(a.Open(filepath.Join(root, "notes", "a.md")))
+	if v.Tree != nil {
+		t.Error("sidebar root changed by a failed open")
+	}
+	must(t)(a.Show(filepath.Join(root, "docs", "guide.md"), 0))
+}
+
+func TestImageOnlyForShownDocument(t *testing.T) {
+	root, _, a := setup(t)
+	must(t)(a.Open(root))
+	readme := filepath.Join(root, "README.md")
+	if _, err := a.Image(readme, "logo.png"); err != nil {
+		t.Fatal(err)
+	}
+	must(t)(a.Navigate("docs/guide.md", 0))
+	if _, err := a.Image(readme, "logo.png"); err == nil {
+		t.Error("image served for a document that is no longer shown")
+	}
+}
+
+func TestResume(t *testing.T) {
+	root, _, a := setup(t)
+	if v := must(t)(a.Resume()); !v.Empty {
+		t.Fatalf("resume with nothing open = %+v", v)
+	}
+	must(t)(a.Open(root))
+	must(t)(a.Navigate("docs/guide.md", 0))
+	v := must(t)(a.Resume())
+	if v.Path != filepath.Join(root, "docs", "guide.md") || v.HTML == "" || v.Tree == nil || !v.CanBack {
+		t.Fatalf("resume = %+v", v)
 	}
 }
 
@@ -185,14 +252,17 @@ func TestEmptyFolder(t *testing.T) {
 }
 
 func TestShellHTML(t *testing.T) {
-	page, err := shellHTML()
+	page, err := shellHTML("k3y")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(page, "{{") || !strings.Contains(page, ".chroma") {
 		t.Error("placeholders not replaced")
 	}
-	other, _ := shellHTML()
+	if !strings.Contains(page, `"k3y"`) {
+		t.Error("bridge key missing")
+	}
+	other, _ := shellHTML("k3y")
 	if page == other {
 		t.Error("nonce reused")
 	}
@@ -220,5 +290,36 @@ func TestSettingsStore(t *testing.T) {
 	}
 	if got := s.Load(); got != (Settings{}) {
 		t.Fatalf("corrupt file = %+v", got)
+	}
+}
+
+func TestSlowRenderDoesNotBlock(t *testing.T) {
+	root, _, a := setup(t)
+	// Unclosed links make goldmark slow (seconds for this size).
+	if err := os.WriteFile(filepath.Join(root, "slow.md"), []byte(strings.Repeat("[a](", 12000)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	must(t)(a.Open(root))
+	slowDone := make(chan error, 1)
+	go func() {
+		_, err := a.Navigate("slow.md", 0)
+		slowDone <- err
+	}()
+	time.Sleep(50 * time.Millisecond) // let the slow render start
+
+	start := time.Now()
+	v := must(t)(a.Show(filepath.Join(root, "notes", "a.md"), 0))
+	if d := time.Since(start); d > 500*time.Millisecond {
+		t.Errorf("a sidebar click waited %v for the slow render", d)
+	}
+	// The slow one finishes later and must not replace what is shown.
+	if err := <-slowDone; err == nil {
+		t.Error("the overtaken navigation succeeded")
+	}
+	if v.Name != "a.md" {
+		t.Fatalf("view = %+v", v)
+	}
+	if v := must(t)(a.Resume()); v.Name != "a.md" {
+		t.Errorf("shown after the slow render = %s", v.Name)
 	}
 }

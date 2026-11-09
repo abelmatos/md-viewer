@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-{{NONCE}}'; style-src 'unsafe-inline'; img-src data: https:; font-src data:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-{{NONCE}}'; style-src 'unsafe-inline'; img-src data: https:; font-src data:; form-action 'none'; base-uri 'none'">
 <title>MD Viewer</title>
 <style>
 :root {
@@ -30,7 +30,7 @@ body.no-side #side, body.no-side #resizer { display: none; }
 body.resizing { cursor: col-resize; user-select: none; }
 body.resizing #main { pointer-events: none; }
 
-#bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 4px; padding: 6px 8px;
+#bar { grid-column: 1 / -1; position: relative; display: flex; align-items: center; gap: 4px; padding: 6px 8px;
   border-bottom: 1px solid var(--border); background: var(--side-bg); color: var(--fg); user-select: none; }
 #bar button { font: inherit; color: var(--fg); background: transparent; border: 1px solid transparent;
   border-radius: 6px; padding: 4px 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
@@ -38,6 +38,11 @@ body.resizing #main { pointer-events: none; }
 #bar button:disabled { color: var(--muted); opacity: .5; cursor: default; }
 #bar .icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 #bar .sep { width: 1px; align-self: stretch; background: var(--border); margin: 2px 4px; }
+body.loading #main { cursor: progress; }
+body.loading #bar::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--link), transparent); background-size: 50% 100%;
+  background-repeat: no-repeat; animation: loading 1s linear infinite; }
+@keyframes loading { from { background-position: -50% 0; } to { background-position: 150% 0; } }
 #path { flex: 1; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   direction: rtl; text-align: left; padding: 0 8px; }
 
@@ -140,10 +145,28 @@ body.empty #doc { display: none; }
 
 <script nonce="{{NONCE}}">
 "use strict";
+// The bridge key: Go answers only requests that carry it, and its replies
+// run only in a document that holds it (this one).
+Object.defineProperty(window, "__mdKey", { value: "{{KEY}}" });
+const pending = new Map();
+let rpcSeq = 0;
+function rpc(method, ...params) {
+  return new Promise((resolve, reject) => {
+    const id = ++rpcSeq;
+    pending.set(id, { resolve, reject });
+    window.chrome.webview.postMessage(JSON.stringify({ key: window.__mdKey, id, method, params }));
+  });
+}
+window.mdReply = (id, ok, value) => {
+  const p = pending.get(id);
+  if (!p) return;
+  pending.delete(id);
+  if (ok) p.resolve(value); else p.reject(new Error(value));
+};
+
 const $ = (id) => document.getElementById(id);
 const main = $("main"), docEl = $("doc"), side = $("side");
 let current = null;   // path of the shown document
-let busy = false;
 
 function toast(msg) {
   const t = $("toast");
@@ -153,17 +176,21 @@ function toast(msg) {
   toast.timer = setTimeout(() => t.classList.remove("show"), 6000);
 }
 
-// call runs a Go method and renders the view it returns. Calls don't overlap.
-async function call(fn, ...args) {
-  if (busy) return;
-  busy = true;
+// call runs a Go method and renders the view it returns. The newest call
+// wins: an older one that answers later is ignored (Go also drops its
+// changes), so a slow document never blocks the next click.
+let latest = 0;
+async function call(method, ...args) {
+  const mine = ++latest;
+  document.body.classList.add("loading");
   try {
-    const v = await fn(...args);
-    if (v) render(v);
+    const v = await rpc(method, ...args);
+    if (mine === latest && v) render(v);
   } catch (e) {
-    toast(String(e && e.message || e));
+    const msg = String(e && e.message || e);
+    if (mine === latest && msg !== "superseded") toast(msg);
   } finally {
-    busy = false;
+    if (mine === latest) document.body.classList.remove("loading");
   }
 }
 
@@ -183,6 +210,10 @@ function render(v) {
   if (!v.sameDoc) {
     const tpl = document.createElement("template");
     tpl.innerHTML = v.html;
+    // Document ids get a prefix, as on GitHub, so a heading can't take the
+    // id of an element of the app (#toast…).
+    for (const el of tpl.content.querySelectorAll("[id]")) el.id = "user-content-" + el.id;
+    for (const el of tpl.content.querySelectorAll("[name]")) el.setAttribute("name", "user-content-" + el.getAttribute("name"));
     // The page can't read files: hand local images to Go, which returns
     // them as data: URIs. Inside a <template> nothing loads yet.
     const local = [];
@@ -198,7 +229,7 @@ function render(v) {
     $("path").textContent = "‎" + v.path; // LRM keeps the path readable under direction: rtl
     $("path").title = v.path;
     for (const [img, src] of local) {
-      window.mdImage(v.path, src)
+      rpc("mdImage", v.path, src)
         .then((uri) => { if (current === v.path) img.src = uri; })
         .catch(() => img.classList.add("broken"));
     }
@@ -210,8 +241,9 @@ function render(v) {
 function scrollTo(v) {
   if (v.scroll) { main.scrollTop = v.scroll; return; }
   if (v.fragment) {
-    const el = document.getElementById(v.fragment) || document.getElementsByName(v.fragment)[0]
-      || document.getElementById(v.fragment.toLowerCase());
+    const id = "user-content-" + v.fragment;
+    const el = document.getElementById(id) || document.getElementsByName(id)[0]
+      || document.getElementById(id.toLowerCase());
     if (el) { el.scrollIntoView(); return; }
   }
   main.scrollTop = 0;
@@ -268,7 +300,9 @@ function treeList(nodes) {
 function markActive() {
   for (const el of side.querySelectorAll("span.active")) el.classList.remove("active");
   if (!current) return;
-  const el = [...side.querySelectorAll("span[data-path]")].find((s) => s.dataset.path === current);
+  // Windows paths ignore case.
+  const want = current.toLowerCase();
+  const el = [...side.querySelectorAll("span[data-path]")].find((s) => s.dataset.path.toLowerCase() === want);
   if (!el) return;
   el.classList.add("active");
   for (let d = el.closest("details"); d; d = d.parentElement.closest("details")) d.open = true;
@@ -277,13 +311,11 @@ function markActive() {
 
 const scrollY = () => main.scrollTop;
 const actions = {
-  "back": () => call(window.mdBack, scrollY()),
-  "forward": () => call(window.mdForward, scrollY()),
-  "reload": () => call(window.mdReload, scrollY()),
-  // Go shows the dialog after this call returns and answers through
-  // mdDeliver or mdFail.
-  "open-file": () => window.mdPickFile(),
-  "open-folder": () => window.mdPickFolder(),
+  "back": () => call("mdBack", scrollY()),
+  "forward": () => call("mdForward", scrollY()),
+  "reload": () => call("mdReload", scrollY()),
+  "open-file": () => call("mdPickFile"),
+  "open-folder": () => call("mdPickFolder"),
   "toggle-side": () => { document.body.classList.toggle("no-side"); saveLayout(); },
 };
 for (const id of ["back", "forward", "reload", "open-file", "open-folder", "toggle-side"]) {
@@ -295,19 +327,23 @@ for (const b of document.querySelectorAll("[data-action]")) {
 
 side.addEventListener("click", (e) => {
   const s = e.target.closest("span[data-path]");
-  if (s) call(window.mdShow, s.dataset.path, scrollY());
+  if (s) call("mdShow", s.dataset.path, scrollY());
 });
 
 // Links never navigate the page itself: Go decides what each one opens.
+// This catches every kind of link anywhere in the page, before anything
+// else sees the click; the sanitiser already drops image maps and forms.
 function onLink(e) {
-  const a = e.target.closest("a[href]");
+  const a = e.target.closest && e.target.closest("a[href], area[href], [href]");
   if (!a) return;
   e.preventDefault();
+  e.stopPropagation();
   if (e.type === "auxclick" && e.button !== 1) return;
-  call(window.mdNavigate, a.getAttribute("href"), scrollY());
+  if (docEl.contains(a)) call("mdNavigate", a.getAttribute("href"), scrollY());
 }
-docEl.addEventListener("click", onLink);
-docEl.addEventListener("auxclick", onLink);
+document.addEventListener("click", onLink, true);
+document.addEventListener("auxclick", onLink, true);
+document.addEventListener("submit", (e) => e.preventDefault(), true);
 
 document.addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
@@ -333,7 +369,7 @@ const darkQuery = matchMedia("(prefers-color-scheme: dark)");
 function syncTheme() {
   const rgb = (c) => (c.match(/\d+/g) || [0, 0, 0]).slice(0, 3).map(Number);
   const bar = getComputedStyle($("bar"));
-  window.mdTheme({
+  rpc("mdTheme", {
     dark: darkQuery.matches,
     bg: rgb(bar.backgroundColor),
     fg: rgb(bar.color),
@@ -352,7 +388,7 @@ function setSideWidth(w) {
   document.body.style.setProperty("--side-w", sideWidth + "px");
 }
 function saveLayout() {
-  window.mdSaveSettings({
+  rpc("mdSaveSettings", {
     sideWidth: sideWidth === DEFAULT_SIDE ? 0 : sideWidth,
     sideHidden: document.body.classList.contains("no-side"),
   }).catch(() => {});
@@ -375,14 +411,13 @@ resizer.addEventListener("pointerup", (e) => {
 });
 resizer.addEventListener("dblclick", () => { setSideWidth(DEFAULT_SIDE); saveLayout(); });
 addEventListener("resize", () => setSideWidth(sideWidth));
-window.mdSettings().then((s) => {
+rpc("mdSettings").then((s) => {
   if (s.sideWidth) setSideWidth(s.sideWidth);
   document.body.classList.toggle("no-side", !!s.sideHidden);
 }).catch(() => {});
 
-window.mdDeliver = render;
 window.mdFail = toast;
-call(window.mdStart);
+call("mdStart");
 main.focus();
 </script>
 </body>

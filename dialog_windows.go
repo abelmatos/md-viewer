@@ -104,14 +104,15 @@ type filterSpec struct {
 
 // pickPath shows the Windows open dialog for a Markdown file, or a folder,
 // and returns the chosen path, or "" if the user cancelled. It must run on
-// the UI thread, where COM is initialised.
+// the UI thread, where go-webview2 initialised COM.
 func pickPath(owner uintptr, folder bool) (string, error) {
 	var dlg *comObject
 	hr, _, _ := procCoCreateInstance.Call(
 		uintptr(unsafe.Pointer(&clsidFileOpenDialog)), 0, clsctxInprocServer,
 		uintptr(unsafe.Pointer(&iidIFileOpenDialog)), uintptr(unsafe.Pointer(&dlg)))
-	if hr != hresultSuccess || dlg == nil {
-		return "", fmt.Errorf("open dialog: CoCreateInstance failed (0x%08X)", hr)
+	// HRESULT is 32 bits; the upper half of the register is undefined.
+	if uint32(hr) != hresultSuccess || dlg == nil { //nolint:gosec // G115: HRESULT is 32 bits
+		return "", fmt.Errorf("open dialog: CoCreateInstance failed (0x%08X)", uint32(hr)) //nolint:gosec // G115: HRESULT is 32 bits
 	}
 	defer dlg.call(vtRelease)
 
