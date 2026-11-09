@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-{{NONCE}}'; style-src 'unsafe-inline'; img-src data: https: http:; font-src data:">
+<title>MD Viewer</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --border: #d1d9e0;
+  --side-bg: #f6f8fa; --hover: #eaeef2; --active: #ddf4ff; --active-fg: #0550ae;
+  --link: #0969da; --code-bg: #f6f8fa; --quote: #59636e; --error-bg: #ffebe9; --error-fg: #82071e;
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d;
+    --side-bg: #151b23; --hover: #212830; --active: #1c2d41; --active-fg: #79c0ff;
+    --link: #4493f8; --code-bg: #151b23; --quote: #9198a1; --error-bg: #3c1618; --error-fg: #ffa198;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.5 var(--font); display: grid;
+  grid-template-rows: auto 1fr; grid-template-columns: var(--side-w, 280px) 1fr; overflow: hidden; }
+body.no-side { grid-template-columns: 0 1fr; }
+body.no-side #side { display: none; }
+
+#bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 4px; padding: 6px 8px;
+  border-bottom: 1px solid var(--border); background: var(--side-bg); user-select: none; }
+#bar button { font: inherit; color: var(--fg); background: transparent; border: 1px solid transparent;
+  border-radius: 6px; padding: 4px 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+#bar button:hover:not(:disabled) { background: var(--hover); }
+#bar button:disabled { color: var(--muted); opacity: .5; cursor: default; }
+#bar .icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+#bar .sep { width: 1px; align-self: stretch; background: var(--border); margin: 2px 4px; }
+#path { flex: 1; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  direction: rtl; text-align: left; padding: 0 8px; }
+
+#side { overflow: auto; border-right: 1px solid var(--border); background: var(--side-bg); padding: 8px 4px; font-size: 13px; }
+#side .root { font-weight: 600; padding: 2px 8px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#side ul { list-style: none; margin: 0; padding: 0 0 0 12px; }
+#side > ul { padding-left: 0; }
+#side li > span, #side summary { display: block; padding: 2px 8px; border-radius: 6px; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#side summary { list-style: none; }
+#side summary::before { content: "▸"; display: inline-block; width: 1em; color: var(--muted); transition: transform .1s; }
+#side details[open] > summary::before { transform: rotate(90deg); }
+#side li > span { padding-left: calc(8px + 1em); }
+#side li > span:hover, #side summary:hover { background: var(--hover); }
+#side li > span.active { background: var(--active); color: var(--active-fg); font-weight: 600; }
+#side .note { color: var(--muted); padding: 8px; }
+
+#main { overflow: auto; position: relative; outline: none; }
+#doc { max-width: 900px; margin: 0 auto; padding: 32px 40px 80px; }
+
+#welcome { display: none; max-width: 520px; margin: 15vh auto 0; text-align: center; color: var(--muted); padding: 0 16px; }
+#welcome h1 { color: var(--fg); font-weight: 600; font-size: 24px; margin: 0 0 8px; }
+#welcome .actions { display: flex; gap: 8px; justify-content: center; margin: 24px 0; flex-wrap: wrap; }
+#welcome button { font: inherit; padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--side-bg); color: var(--fg); cursor: pointer; }
+#welcome button:hover { background: var(--hover); }
+#welcome kbd { font: 12px var(--mono); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
+body.empty #welcome { display: block; }
+body.empty #doc { display: none; }
+
+#toast { position: fixed; bottom: 16px; right: 16px; max-width: 480px; background: var(--error-bg); color: var(--error-fg);
+  border: 1px solid currentColor; border-radius: 6px; padding: 8px 12px; display: none; white-space: pre-wrap; word-break: break-word; }
+#toast.show { display: block; }
+
+/* Markdown, close to GitHub's rendering */
+.md { word-wrap: break-word; font-size: 16px; line-height: 1.6; }
+.md > :first-child { margin-top: 0 !important; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 24px 0 16px; font-weight: 600; line-height: 1.25; scroll-margin-top: 16px; }
+.md h1 { font-size: 2em; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
+.md h2 { font-size: 1.5em; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
+.md h3 { font-size: 1.25em; } .md h4 { font-size: 1em; } .md h5 { font-size: .875em; } .md h6 { font-size: .85em; color: var(--muted); }
+.md p, .md blockquote, .md ul, .md ol, .md dl, .md table, .md pre, .md details { margin: 0 0 16px; }
+.md a { color: var(--link); text-decoration: none; }
+.md a:hover { text-decoration: underline; }
+.md ul, .md ol { padding-left: 2em; }
+.md li + li { margin-top: .25em; }
+.md li > ul, .md li > ol { margin: .25em 0 0; }
+.md li:has(> input[type=checkbox]) { list-style: none; }
+.md li > input[type=checkbox] { margin: 0 .3em .2em -1.4em; vertical-align: middle; }
+.md blockquote { padding: 0 1em; color: var(--quote); border-left: .25em solid var(--border); }
+.md hr { height: .25em; padding: 0; margin: 24px 0; background: var(--border); border: 0; }
+.md img { max-width: 100%; }
+.md code { font: 85% var(--mono); background: var(--code-bg); padding: .2em .4em; border-radius: 6px; }
+.md pre { font: 85%/1.45 var(--mono); background: var(--code-bg) !important; padding: 16px; overflow: auto; border-radius: 6px; }
+.md pre code { background: none; padding: 0; font-size: 100%; }
+.md table { border-collapse: collapse; display: block; width: max-content; max-width: 100%; overflow: auto; }
+.md th, .md td { padding: 6px 13px; border: 1px solid var(--border); }
+.md th { font-weight: 600; }
+.md tr:nth-child(2n) { background: var(--side-bg); }
+.md kbd { font: 11px var(--mono); padding: 3px 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 6px; background: var(--code-bg); }
+.md details summary { cursor: pointer; }
+.md .footnotes { font-size: .875em; color: var(--muted); border-top: 1px solid var(--border); padding-top: 8px; }
+.md .footnotes hr { display: none; }
+.md img.broken { outline: 1px dashed var(--border); }
+.md :target { scroll-margin-top: 16px; }
+
+{{CODE_CSS}}
+</style>
+</head>
+<body class="empty">
+<div id="bar">
+  <button id="back" title="Back (Alt+Left)" disabled><svg class="icon" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
+  <button id="forward" title="Forward (Alt+Right)" disabled><svg class="icon" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg></button>
+  <button id="reload" title="Reload (F5)"><svg class="icon" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/></svg></button>
+  <span class="sep"></span>
+  <button id="toggle-side" title="Show or hide the sidebar (Ctrl+B)"><svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg></button>
+  <button id="open-file" title="Open file (Ctrl+O)"><svg class="icon" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>File</button>
+  <button id="open-folder" title="Open folder (Ctrl+Shift+O)"><svg class="icon" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Folder</button>
+  <span id="path"></span>
+</div>
+<nav id="side"></nav>
+<main id="main" tabindex="-1">
+  <section id="welcome">
+    <h1>MD Viewer</h1>
+    <p>Open a Markdown file, or a folder to browse all the Markdown files in it.</p>
+    <div class="actions">
+      <button data-action="open-file">Open file…</button>
+      <button data-action="open-folder">Open folder…</button>
+    </div>
+    <p><kbd>Ctrl</kbd>+<kbd>O</kbd> file · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> folder · <kbd>Alt</kbd>+<kbd>←</kbd>/<kbd>→</kbd> back/forward</p>
+  </section>
+  <article id="doc" class="md"></article>
+</main>
+<div id="toast" role="alert"></div>
+
+<script nonce="{{NONCE}}">
+"use strict";
+const $ = (id) => document.getElementById(id);
+const main = $("main"), docEl = $("doc"), side = $("side");
+let current = null;   // path of the shown document
+let busy = false;
+
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.classList.remove("show"), 6000);
+}
+
+// call runs a Go method and renders the view it returns. Calls don't overlap.
+async function call(fn, ...args) {
+  if (busy) return;
+  busy = true;
+  try {
+    const v = await fn(...args);
+    if (v) render(v);
+  } catch (e) {
+    toast(String(e && e.message || e));
+  } finally {
+    busy = false;
+  }
+}
+
+function render(v) {
+  if (v.tree !== undefined) renderTree(v.tree, v.truncated);
+  $("back").disabled = !v.canBack;
+  $("forward").disabled = !v.canForward;
+  if (v.empty) {
+    document.body.classList.add("empty");
+    docEl.replaceChildren();
+    current = null;
+    $("path").textContent = "";
+    markActive();
+    return;
+  }
+  document.body.classList.remove("empty");
+  if (!v.sameDoc) {
+    const tpl = document.createElement("template");
+    tpl.innerHTML = v.html;
+    // The page can't read files: hand local images to Go, which returns
+    // them as data: URIs. Inside a <template> nothing loads yet.
+    const local = [];
+    for (const img of tpl.content.querySelectorAll("img[src]")) {
+      const src = img.getAttribute("src");
+      if (!/^(https?:|data:)/i.test(src)) {
+        img.removeAttribute("src");
+        local.push([img, src]);
+      }
+    }
+    docEl.replaceChildren(tpl.content);
+    current = v.path;
+    $("path").textContent = "‎" + v.path; // LRM keeps the path readable under direction: rtl
+    $("path").title = v.path;
+    for (const [img, src] of local) {
+      window.mdImage(v.path, src)
+        .then((uri) => { if (current === v.path) img.src = uri; })
+        .catch(() => img.classList.add("broken"));
+    }
+  }
+  markActive();
+  scrollTo(v);
+}
+
+function scrollTo(v) {
+  if (v.scroll) { main.scrollTop = v.scroll; return; }
+  if (v.fragment) {
+    const el = document.getElementById(v.fragment) || document.getElementsByName(v.fragment)[0]
+      || document.getElementById(v.fragment.toLowerCase());
+    if (el) { el.scrollIntoView(); return; }
+  }
+  main.scrollTop = 0;
+}
+
+function renderTree(tree, truncated) {
+  side.replaceChildren();
+  if (!tree) return;
+  const root = document.createElement("div");
+  root.className = "root";
+  root.textContent = tree.name;
+  root.title = tree.path;
+  side.append(root);
+  if (!tree.children || !tree.children.length) {
+    const n = document.createElement("div");
+    n.className = "note";
+    n.textContent = "No Markdown files in this folder.";
+    side.append(n);
+    return;
+  }
+  side.append(treeList(tree.children));
+  if (truncated) {
+    const n = document.createElement("div");
+    n.className = "note";
+    n.textContent = "Too many files: the list is cut short.";
+    side.append(n);
+  }
+}
+
+function treeList(nodes) {
+  const ul = document.createElement("ul");
+  for (const n of nodes) {
+    const li = document.createElement("li");
+    if (n.dir) {
+      const d = document.createElement("details");
+      const s = document.createElement("summary");
+      s.textContent = n.name;
+      s.title = n.path;
+      d.append(s, treeList(n.children || []));
+      li.append(d);
+    } else {
+      const s = document.createElement("span");
+      s.textContent = n.name;
+      s.title = n.path;
+      s.dataset.path = n.path;
+      li.append(s);
+    }
+    ul.append(li);
+  }
+  return ul;
+}
+
+// markActive highlights the shown file in the sidebar and opens its folders.
+function markActive() {
+  for (const el of side.querySelectorAll("span.active")) el.classList.remove("active");
+  if (!current) return;
+  const el = [...side.querySelectorAll("span[data-path]")].find((s) => s.dataset.path === current);
+  if (!el) return;
+  el.classList.add("active");
+  for (let d = el.closest("details"); d; d = d.parentElement.closest("details")) d.open = true;
+  el.scrollIntoView({ block: "nearest" });
+}
+
+const scrollY = () => main.scrollTop;
+const actions = {
+  "back": () => call(window.mdBack, scrollY()),
+  "forward": () => call(window.mdForward, scrollY()),
+  "reload": () => call(window.mdReload, scrollY()),
+  // Go shows the dialog after this call returns and answers through
+  // mdDeliver or mdFail.
+  "open-file": () => window.mdPickFile(),
+  "open-folder": () => window.mdPickFolder(),
+  "toggle-side": () => document.body.classList.toggle("no-side"),
+};
+for (const id of ["back", "forward", "reload", "open-file", "open-folder", "toggle-side"]) {
+  $(id).addEventListener("click", actions[id]);
+}
+for (const b of document.querySelectorAll("[data-action]")) {
+  b.addEventListener("click", actions[b.dataset.action]);
+}
+
+side.addEventListener("click", (e) => {
+  const s = e.target.closest("span[data-path]");
+  if (s) call(window.mdShow, s.dataset.path, scrollY());
+});
+
+// Links never navigate the page itself: Go decides what each one opens.
+function onLink(e) {
+  const a = e.target.closest("a[href]");
+  if (!a) return;
+  e.preventDefault();
+  if (e.type === "auxclick" && e.button !== 1) return;
+  call(window.mdNavigate, a.getAttribute("href"), scrollY());
+}
+docEl.addEventListener("click", onLink);
+docEl.addEventListener("auxclick", onLink);
+
+document.addEventListener("keydown", (e) => {
+  const k = e.key.toLowerCase();
+  let act = null;
+  if (e.altKey && k === "arrowleft" || k === "browserback") act = "back";
+  else if (e.altKey && k === "arrowright" || k === "browserforward") act = "forward";
+  else if (k === "f5" || e.ctrlKey && k === "r") act = "reload";
+  else if (e.ctrlKey && k === "o") act = e.shiftKey ? "open-folder" : "open-file";
+  else if (e.ctrlKey && k === "b") act = "toggle-side";
+  if (act) { e.preventDefault(); actions[act](); }
+});
+// Mouse back/forward buttons.
+document.addEventListener("mouseup", (e) => {
+  if (e.button === 3) { e.preventDefault(); actions.back(); }
+  if (e.button === 4) { e.preventDefault(); actions.forward(); }
+});
+// Dropping a file would replace the app with the raw file.
+for (const t of ["dragover", "drop"]) document.addEventListener(t, (e) => e.preventDefault());
+
+window.mdDeliver = render;
+window.mdFail = toast;
+call(window.mdStart);
+main.focus();
+</script>
+</body>
+</html>

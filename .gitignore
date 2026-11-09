@@ -1,0 +1,7 @@
+# Build output
+*.exe
+/md-viewer
+/dist/
+
+# Runtime
+*.log

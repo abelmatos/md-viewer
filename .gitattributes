@@ -1,0 +1,5 @@
+# Keep LF on Windows runners so gofmt checks don't see CRLF
+* text=auto eol=lf
+*.exe binary
+*.ico binary
+*.syso binary
