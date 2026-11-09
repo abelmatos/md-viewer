@@ -133,8 +133,38 @@ func TestResolve(t *testing.T) {
 			t.Errorf("Resolve(%q) error = %v, want ErrUnsupported", href, err)
 		}
 	}
+	// Network paths would make Windows authenticate to the server.
+	for _, href := range []string{`\\evil\share\x.png`, "//evil/share/x.md", "%5C%5Cevil%5Cshare%5Cx.png", `\\?\UNC\evil\s\x`, "/\\evil/s/x"} {
+		if _, err := Resolve(root, cur, href); !errors.Is(err, ErrUnsupported) {
+			t.Errorf("Resolve(%q) error = %v, want ErrUnsupported", href, err)
+		}
+		if _, err := ImageDataURI(root, cur, href); !errors.Is(err, ErrUnsupported) {
+			t.Errorf("ImageDataURI(%q) error = %v, want ErrUnsupported", href, err)
+		}
+	}
 	if _, err := Resolve(root, cur, "missing.md"); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("missing file: error = %v", err)
+	}
+}
+
+func TestUNCShare(t *testing.T) {
+	for p, want := range map[string]string{
+		`\\srv\docs\a.md`:    `\\srv\docs`,
+		"//srv/docs/a.md":    `\\srv\docs`,
+		`\\?\UNC\srv\docs\a`: `\\srv\docs`,
+		`\\srv`:              `\\srv`,
+		`\\?\C:\x`:           `\\?\C:`,
+		`C:\docs\a.md`:       "",
+		"/docs/a.md":         "",
+		"docs/a.md":          "",
+	} {
+		if got := uncShare(p); got != want {
+			t.Errorf("uncShare(%q) = %q, want %q", p, got, want)
+		}
+	}
+	// A document on a share may link within that share.
+	if _, err := Resolve("", `\\srv\docs\a.md`, "//SRV/docs/b.md"); errors.Is(err, ErrUnsupported) {
+		t.Errorf("link within the same share rejected: %v", err)
 	}
 }
 

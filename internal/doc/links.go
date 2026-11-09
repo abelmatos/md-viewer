@@ -79,7 +79,14 @@ func Resolve(root, current, href string) (Target, error) {
 
 	p, frag, _ := strings.Cut(href, "#")
 	p, _, _ = strings.Cut(p, "?")
-	p = filepath.FromSlash(unescape(p))
+	p = unescape(p)
+	// Touching \\server\share makes Windows authenticate to that server,
+	// leaking the user's NTLM hash to whoever wrote the document. Only the
+	// share the document itself is on may be used.
+	if share := uncShare(p); share != "" && !strings.EqualFold(share, uncShare(current)) {
+		return Target{}, fmt.Errorf("%w: network path %s", ErrUnsupported, share)
+	}
+	p = filepath.FromSlash(p)
 	switch {
 	case filepath.IsAbs(p) && filepath.VolumeName(p) != "":
 		// C:\docs\a.md or \\server\share\a.md
@@ -109,6 +116,30 @@ func Resolve(root, current, href string) (Target, error) {
 		return Target{Kind: Markdown, Path: p, Fragment: unescape(frag)}, nil
 	}
 	return Target{Kind: Local, Path: p}, nil
+}
+
+// uncShare returns the \\server\share prefix of a network path (either slash
+// style, including \\?\UNC\ paths), or "" for any other path.
+func uncShare(p string) string {
+	isSep := func(c byte) bool { return c == '\\' || c == '/' }
+	if len(p) < 2 || !isSep(p[0]) || !isSep(p[1]) {
+		return ""
+	}
+	parts := strings.FieldsFunc(p[2:], func(r rune) bool { return r == '\\' || r == '/' })
+	if len(parts) >= 2 && (parts[0] == "?" || parts[0] == ".") {
+		if strings.EqualFold(parts[1], "UNC") {
+			parts = parts[2:]
+		} else {
+			return `\\` + parts[0] + `\` + parts[1] // device path, e.g. \\?\C:
+		}
+	}
+	switch len(parts) {
+	case 0:
+		return `\\`
+	case 1:
+		return `\\` + parts[0]
+	}
+	return `\\` + parts[0] + `\` + parts[1]
 }
 
 func unescape(s string) string {
