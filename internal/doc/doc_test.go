@@ -1,6 +1,7 @@
 package doc
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -38,7 +39,7 @@ func TestRender(t *testing.T) {
 		"<details><summary>More</summary>hidden</details>\n\n" +
 		"<p align=\"center\"><img src=\"logo.png\" width=\"100\"></p>\n\n" +
 		"Note[^1]\n\n[^1]: The note.\n"
-	html, err := r.Render([]byte(src))
+	html, err := r.Render(context.Background(), []byte(src))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +67,7 @@ func TestRenderStripsScripts(t *testing.T) {
 		"[click](javascript:alert(3))\n\n" +
 		"<iframe src=\"https://evil.example\"></iframe>\n\n" +
 		"<a href=\"#\" style=\"position:fixed\" onclick=\"alert(4)\">x</a>\n"
-	html, err := r.Render([]byte(src))
+	html, err := r.Render(context.Background(), []byte(src))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,6 +109,7 @@ func TestResolve(t *testing.T) {
 		{"#caf%C3%A9", Target{Kind: Anchor, Fragment: "café"}},
 		{"https://example.com/x", Target{Kind: External, URL: "https://example.com/x"}},
 		{"mailto:a@b.c", Target{Kind: External, URL: "mailto:a@b.c"}},
+		{`mailto:a@b.c?subject=Hi&attach=C:\x\id_rsa&body=x`, Target{Kind: External, URL: "mailto:a@b.c?body=x&subject=Hi"}},
 		{"../README.md", Target{Kind: Markdown, Path: p("README.md")}},
 		{"My%20File.md#top", Target{Kind: Markdown, Path: p("docs/My File.md"), Fragment: "top"}},
 		{"./guide.md?plain=1", Target{Kind: Markdown, Path: p("docs/guide.md")}},
@@ -123,6 +125,10 @@ func TestResolve(t *testing.T) {
 			t.Errorf("Resolve(%q): %v", tt.href, err)
 			continue
 		}
+		if got.Real != got.Path { // no links here: resolving changes nothing
+			t.Errorf("Resolve(%q).Real = %q, want %q", tt.href, got.Real, got.Path)
+		}
+		got.Real = ""
 		if got != tt.want {
 			t.Errorf("Resolve(%q) = %+v, want %+v", tt.href, got, tt.want)
 		}
@@ -183,7 +189,7 @@ func TestTree(t *testing.T) {
 		"src/main.go":               "",
 		"src/internal/design.mdown": "",
 	})
-	tree, truncated, err := Tree(root)
+	tree, truncated, err := Tree(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}

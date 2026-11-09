@@ -13,6 +13,9 @@ import (
 
 // Documents are untrusted: every path one of them leads to is checked with
 // CheckPath before the file system is touched, and read with ReadRegular.
+// Checks such as "inside the open folder" compare the resolved path
+// CheckPath returns, never the path's text, which a link inside the folder
+// could point anywhere.
 
 // maxLinkHops bounds how many symbolic links CheckPath follows.
 const maxLinkHops = 32
@@ -22,35 +25,39 @@ const maxLinkHops = 32
 // or on current's network share, also after following symbolic links and
 // junctions, which are resolved one path element at a time without touching
 // their targets. Device names (CON, COM1…) and alternate data streams
-// (file:stream) are refused.
-func CheckPath(p, current string) error {
+// (file:stream) are refused. It returns p with every link resolved.
+func CheckPath(p, current string) (string, error) {
 	for hops := 0; ; hops++ {
 		if err := checkText(p, current); err != nil {
-			return err
+			return "", err
 		}
 		next, linked, err := firstLink(p, current)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if !linked {
-			return nil
+			return p, nil
 		}
 		if hops == maxLinkHops {
-			return fmt.Errorf("%w: too many links in %s", ErrUnsupported, p)
+			return "", fmt.Errorf("%w: too many links in %s", ErrUnsupported, p)
 		}
 		p = next
 	}
 }
 
+// Real resolves the links in p, a path the user chose (the open folder),
+// checked like a document path on p's own volume.
+func Real(p string) (string, error) { return CheckPath(p, p) }
+
 // checkText applies the rules that need only the path's text.
 func checkText(p, current string) error {
 	// Touching \\server\share makes Windows authenticate to that server,
 	// leaking the user's NTLM hash to whoever wrote the document.
-	if share := uncShare(p); share != "" && !strings.EqualFold(share, uncShare(current)) {
+	if share := uncShare(p); share != "" && !isLocalVolume(share) && !strings.EqualFold(share, uncShare(current)) {
 		return fmt.Errorf("%w: network path %s", ErrUnsupported, share)
 	}
 	vol := filepath.VolumeName(p)
-	if vol != "" && !isDrive(vol) && !strings.EqualFold(vol, filepath.VolumeName(current)) {
+	if vol != "" && !isLocalVolume(vol) && !strings.EqualFold(vol, filepath.VolumeName(current)) {
 		return fmt.Errorf("%w: network path %s", ErrUnsupported, vol)
 	}
 	rest := p[len(vol):]
@@ -120,8 +127,21 @@ func isDeviceName(elem string) bool {
 	case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$":
 		return true
 	}
-	if len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) {
-		return base[3] >= '0' && base[3] <= '9'
+	if num, ok := strings.CutPrefix(base, "COM"); ok {
+		return isPortNumber(num)
+	}
+	if num, ok := strings.CutPrefix(base, "LPT"); ok {
+		return isPortNumber(num)
+	}
+	return false
+}
+
+// isPortNumber matches the digits Windows accepts after COM and LPT,
+// including the superscripts ¹ ² ³.
+func isPortNumber(s string) bool {
+	switch s {
+	case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "¹", "²", "³":
+		return true
 	}
 	return false
 }

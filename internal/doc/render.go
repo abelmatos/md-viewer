@@ -4,6 +4,7 @@ package doc
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -32,15 +33,32 @@ const RenderTimeout = 10 * time.Second
 // ErrTooSlow is returned when rendering takes longer than RenderTimeout.
 var ErrTooSlow = errors.New("the document took too long to render")
 
+// IsolateAbove is the size above which documents render in a separate
+// process (see Renderer.Isolate). Below it the worst case is about a second
+// of CPU, not worth a process start.
+const IsolateAbove = 64 << 10
+
 // Renderer turns Markdown into sanitised HTML. It is safe for concurrent use.
 type Renderer struct {
 	md      goldmark.Markdown
 	policy  *bluemonday.Policy
 	timeout time.Duration
 
+	// Isolate, if set, renders documents larger than IsolateAbove in a
+	// separate process that ends when ctx does. goldmark can't be
+	// cancelled, so this is what stops a runaway render from using a CPU
+	// core for minutes after the viewer gave up on it.
+	Isolate func(ctx context.Context, src []byte) (string, error)
+
 	mu   sync.Mutex
 	slow map[[32]byte]bool // sources that timed out; refused right away
+
+	slots chan struct{} // bounds renders running at once
 }
+
+// MaxRenders is how many documents render at the same time; a render waits
+// for a slot (or for its request to be cancelled).
+const MaxRenders = 2
 
 // NewRenderer returns a renderer for GitHub-flavoured Markdown (tables, task
 // lists, strikethrough, autolinks, footnotes) with highlighted code blocks.
@@ -58,7 +76,7 @@ func NewRenderer() *Renderer {
 		// It is let through here and sanitised below.
 		goldmark.WithRendererOptions(html.WithUnsafe()),
 	)
-	return &Renderer{md: md, policy: newPolicy(), timeout: RenderTimeout}
+	return &Renderer{md: md, policy: newPolicy(), timeout: RenderTimeout, slots: make(chan struct{}, MaxRenders)}
 }
 
 var (
@@ -103,11 +121,13 @@ func newPolicy() *bluemonday.Policy {
 	return p
 }
 
-// Render converts src to sanitised HTML, giving up after the renderer's
-// timeout. goldmark can't be cancelled, so a render that times out keeps a
-// CPU core busy until it finishes; the same content is then refused at once,
-// so retrying can't pile up more of them.
-func (r *Renderer) Render(src []byte) (string, error) {
+// Render converts src to sanitised HTML. It gives up when ctx is cancelled
+// (returning ctx's error) or after the renderer's timeout (ErrTooSlow;
+// that content is then refused at once). Large documents render in a
+// separate process (Isolate), killed when the render is abandoned. Small
+// ones render here: goldmark can't be cancelled, so an abandoned one runs
+// on, about a second at most at that size, still holding its slot.
+func (r *Renderer) Render(ctx context.Context, src []byte) (string, error) {
 	sum := sha256.Sum256(src)
 	r.mu.Lock()
 	known := r.slow[sum]
@@ -115,28 +135,62 @@ func (r *Renderer) Render(src []byte) (string, error) {
 	if known {
 		return "", ErrTooSlow
 	}
+	select {
+	case r.slots <- struct{}{}:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	tctx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
+	if r.Isolate != nil && len(src) > IsolateAbove {
+		defer func() { <-r.slots }()
+		h, err := r.Isolate(tctx, src)
+		return r.outcome(ctx, tctx, sum, h, err)
+	}
 	type result struct {
 		html string
 		err  error
 	}
 	done := make(chan result, 1)
 	go func() {
+		defer func() { <-r.slots }()
 		h, err := r.render(src)
 		done <- result{h, err}
 	}()
 	select {
 	case res := <-done:
 		return res.html, res.err
-	case <-time.After(r.timeout):
-		r.mu.Lock()
-		if r.slow == nil {
-			r.slow = map[[32]byte]bool{}
-		}
-		r.slow[sum] = true
-		r.mu.Unlock()
-		return "", ErrTooSlow
+	case <-tctx.Done():
+		return r.outcome(ctx, tctx, sum, "", tctx.Err())
 	}
 }
+
+// outcome turns a render that ended into its result: cancelled, too slow,
+// or what it produced.
+func (r *Renderer) outcome(ctx, tctx context.Context, sum [32]byte, h string, err error) (string, error) {
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if tctx.Err() != nil {
+		r.markSlow(sum)
+		return "", ErrTooSlow
+	}
+	return h, err
+}
+
+func (r *Renderer) markSlow(sum [32]byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.slow == nil {
+		r.slow = map[[32]byte]bool{}
+	}
+	r.slow[sum] = true
+}
+
+// RenderNow renders src in this goroutine, with no timeout: for the child
+// process that Isolate starts.
+func (r *Renderer) RenderNow(src []byte) (string, error) { return r.render(src) }
 
 func (r *Renderer) render(src []byte) (string, error) {
 	var buf bytes.Buffer

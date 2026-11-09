@@ -323,3 +323,18 @@ func TestSlowRenderDoesNotBlock(t *testing.T) {
 		t.Errorf("shown after the slow render = %s", v.Name)
 	}
 }
+
+func TestShowRefusesLinkOutOfFolder(t *testing.T) {
+	root, _, a := setup(t)
+	outside := filepath.Join(t.TempDir(), "secret.md")
+	if err := os.WriteFile(outside, []byte("# secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "notes", "link.md")); err != nil {
+		t.Skip(err)
+	}
+	must(t)(a.Open(root))
+	if _, err := a.Show(filepath.Join(root, "notes", "link.md"), 0); err == nil {
+		t.Error("Show followed a link out of the folder")
+	}
+}

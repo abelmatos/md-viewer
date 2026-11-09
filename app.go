@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -129,12 +130,12 @@ func (a *App) Open(path string) (*View, error) {
 	var truncated bool
 	rootChanged := !doc.SamePath(newRoot, s.root)
 	if rootChanged {
-		if tree, truncated, err = doc.Tree(newRoot); err != nil {
+		if tree, truncated, err = doc.Tree(context.Background(), newRoot); err != nil {
 			return nil, err
 		}
 	}
 	if file == "" {
-		if file = doc.FolderIndex(abs); file == "" && tree != nil {
+		if file = doc.FolderIndex(abs, abs); file == "" && tree != nil {
 			file = doc.FirstFile(tree)
 		}
 	}
@@ -191,8 +192,14 @@ func (a *App) Show(path string, scroll float64) (*View, error) {
 	if s.root == "" || !filepath.IsAbs(path) || !doc.IsMarkdown(path) || !doc.Within(s.root, path) {
 		return nil, fmt.Errorf("%w: %s", doc.ErrUnsupported, path)
 	}
-	if err := doc.CheckPath(path, s.root); err != nil {
+	// Compare the resolved path too: a link inside the folder can point
+	// anywhere.
+	real, err := doc.CheckPath(path, s.root)
+	if err != nil {
 		return nil, err
+	}
+	if !doc.InsideFolder(s.root, real) {
+		return nil, fmt.Errorf("%w: %s", doc.ErrUnsupported, path)
 	}
 	return a.visit(s, doc.Entry{Path: path}, scroll)
 }
@@ -259,7 +266,7 @@ func (a *App) full(s snapshot, scroll *float64) (*View, error) {
 	var truncated bool
 	if s.root != "" {
 		var err error
-		if tree, truncated, err = doc.Tree(s.root); err != nil {
+		if tree, truncated, err = doc.Tree(context.Background(), s.root); err != nil {
 			return nil, err
 		}
 	}
@@ -313,7 +320,7 @@ func (a *App) render(e doc.Entry, shown string, force bool) (*View, error) {
 	if err != nil {
 		return nil, err
 	}
-	if v.HTML, err = a.renderer.Render(src); err != nil {
+	if v.HTML, err = a.renderer.Render(context.Background(), src); err != nil {
 		return nil, err
 	}
 	return v, nil

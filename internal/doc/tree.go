@@ -1,6 +1,7 @@
 package doc
 
 import (
+	"context"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -27,14 +28,18 @@ type Node struct {
 
 // Tree lists the Markdown files under root, keeping only folders that contain
 // some. Hidden folders (.git, .github…) and node_modules are skipped.
-// truncated is true when a limit cut the listing short.
-func Tree(root string) (tree *Node, truncated bool, err error) {
+// truncated is true when a limit cut the listing short. It stops with
+// ctx's error when ctx is cancelled.
+func Tree(ctx context.Context, root string) (tree *Node, truncated bool, err error) {
 	tree = &Node{Name: filepath.Base(root), Path: root, Dir: true}
 	dirs := map[string]*Node{root: tree}
 	count, visited := 0, 0
 	deadline := time.Now().Add(MaxTreeTime)
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		visited++
+		if visited%64 == 0 && ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if visited > MaxTreeEntries || (visited%256 == 0 && time.Now().After(deadline)) {
 			truncated = true
 			return filepath.SkipAll

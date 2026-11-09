@@ -39,13 +39,24 @@ func ImageDataURI(root, current, src string) (string, error) {
 		return "", fmt.Errorf("not an image: %s", t.Path)
 	}
 	// Like GitHub, images come from the open folder (or the document's own
-	// folder), not from anywhere on the drive.
-	if !Within(root, t.Path) && !Within(filepath.Dir(current), t.Path) {
+	// folder), not from anywhere on the drive. The resolved paths are
+	// compared, so a link inside the folder can't point outside it.
+	if !InsideFolder(root, t.Real) && !InsideFolder(filepath.Dir(current), t.Real) {
 		return "", fmt.Errorf("%w: image outside the folder: %s", ErrUnsupported, src)
 	}
-	data, err := ReadRegular(t.Path, MaxImageSize)
+	data, err := ReadRegular(t.Real, MaxImageSize)
 	if err != nil {
 		return "", err
 	}
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
+// InsideFolder reports whether the resolved path real is inside folder, also
+// resolved.
+func InsideFolder(folder, real string) bool {
+	if folder == "" {
+		return false
+	}
+	f, err := Real(folder)
+	return err == nil && Within(f, real)
 }

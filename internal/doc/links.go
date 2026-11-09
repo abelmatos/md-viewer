@@ -29,6 +29,7 @@ const (
 type Target struct {
 	Kind     Kind
 	Path     string // Markdown and Local
+	Real     string // Path with links resolved (Markdown and Local)
 	Fragment string // Anchor and Markdown, without "#"
 	URL      string // External
 }
@@ -47,11 +48,18 @@ func IsMarkdown(path string) bool {
 // indexNames are the files shown when a link or the user opens a folder.
 var indexNames = []string{"README.md", "readme.md", "Readme.md", "index.md", "INDEX.md"}
 
-// FolderIndex returns the README or index file of dir, or "" if it has none.
-func FolderIndex(dir string) string {
+// FolderIndex returns the README or index file of dir, or "" if it has
+// none. Each candidate passes CheckPath (with current as the document, or
+// the folder itself when the user opened it) before it is looked at: a
+// README.md can be a link to a network share.
+func FolderIndex(dir, current string) string {
 	for _, n := range indexNames {
 		p := filepath.Join(dir, n)
-		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+		real, err := CheckPath(p, current)
+		if err != nil {
+			continue
+		}
+		if fi, err := os.Stat(real); err == nil && fi.Mode().IsRegular() {
 			return p
 		}
 	}
@@ -71,8 +79,10 @@ func Resolve(root, current, href string) (Target, error) {
 	}
 	if u, err := url.Parse(href); err == nil && len(u.Scheme) > 1 { // one letter is a drive, as in C:\docs
 		switch strings.ToLower(u.Scheme) {
-		case "http", "https", "mailto":
+		case "http", "https":
 			return Target{Kind: External, URL: href}, nil
+		case "mailto":
+			return Target{Kind: External, URL: cleanMailto(u)}, nil
 		}
 		return Target{}, fmt.Errorf("%w: %s", ErrUnsupported, u.Scheme)
 	}
@@ -97,11 +107,12 @@ func Resolve(root, current, href string) (Target, error) {
 	default:
 		p = filepath.Join(filepath.Dir(current), p)
 	}
-	if err := CheckPath(p, current); err != nil {
+	real, err := CheckPath(p, current)
+	if err != nil {
 		return Target{}, err
 	}
 
-	fi, err := os.Stat(p)
+	fi, err := os.Stat(real)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return Target{}, fmt.Errorf("not found: %s", p)
@@ -109,15 +120,19 @@ func Resolve(root, current, href string) (Target, error) {
 		return Target{}, err
 	}
 	if fi.IsDir() {
-		if idx := FolderIndex(p); idx != "" {
-			return Target{Kind: Markdown, Path: idx, Fragment: unescape(frag)}, nil
+		if idx := FolderIndex(p, current); idx != "" {
+			idxReal, err := CheckPath(idx, current)
+			if err != nil {
+				return Target{}, err
+			}
+			return Target{Kind: Markdown, Path: idx, Real: idxReal, Fragment: unescape(frag)}, nil
 		}
-		return Target{Kind: Local, Path: p}, nil
+		return Target{Kind: Local, Path: p, Real: real}, nil
 	}
 	if IsMarkdown(p) {
-		return Target{Kind: Markdown, Path: p, Fragment: unescape(frag)}, nil
+		return Target{Kind: Markdown, Path: p, Real: real, Fragment: unescape(frag)}, nil
 	}
-	return Target{Kind: Local, Path: p}, nil
+	return Target{Kind: Local, Path: p, Real: real}, nil
 }
 
 // uncShare returns the \\server\share prefix of a network path (either slash
@@ -153,6 +168,35 @@ func isDrive(vol string) bool {
 	return len(vol) == 2 && vol[1] == ':' && (vol[0]|0x20 >= 'a' && vol[0]|0x20 <= 'z')
 }
 
+// isLocalVolume reports whether vol is a local volume: a drive letter, the
+// same as a \\?\ device path (\\?\C:), or a volume GUID (\\?\Volume{…}),
+// which is where a junction to a mounted volume points.
+func isLocalVolume(vol string) bool {
+	if isDrive(vol) {
+		return true
+	}
+	if len(vol) < 4 || !isSeparator(rune(vol[0])) || !isSeparator(rune(vol[1])) || vol[2] != '?' || !isSeparator(rune(vol[3])) {
+		return false
+	}
+	rest := vol[4:]
+	return isDrive(rest) || (len(rest) > 8 && strings.EqualFold(rest[:7], "Volume{") && !strings.ContainsAny(rest, `\/`))
+}
+
+// cleanMailto keeps only the address and the subject, body, cc and bcc of a
+// mailto: link. Some mail apps honour other fields, such as attach=, which
+// a document could use to attach a local file to a mail.
+func cleanMailto(u *url.URL) string {
+	q := url.Values{}
+	for k, v := range u.Query() {
+		switch strings.ToLower(k) {
+		case "subject", "body", "cc", "bcc":
+			q[strings.ToLower(k)] = v
+		}
+	}
+	out := url.URL{Scheme: "mailto", Opaque: u.Opaque, RawQuery: q.Encode()}
+	return out.String()
+}
+
 func unescape(s string) string {
 	if u, err := url.PathUnescape(s); err == nil {
 		return u
@@ -161,10 +205,11 @@ func unescape(s string) string {
 }
 
 // RepoRoot returns the closest folder at or above dir that contains .git,
-// or dir itself if there is none.
+// or dir itself if there is none. .git is only looked at, never followed:
+// it can be a link to a network share.
 func RepoRoot(dir string) string {
 	for d := dir; ; {
-		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
 			return d
 		}
 		parent := filepath.Dir(d)

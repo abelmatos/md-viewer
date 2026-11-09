@@ -1,6 +1,7 @@
 package doc
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ func TestCheckPathText(t *testing.T) {
 		filepath.Join(dir, "x.png:stream"),
 		`\\evil\share\x.png`,
 	} {
-		if err := CheckPath(p, cur); !errors.Is(err, ErrUnsupported) {
+		if _, err := CheckPath(p, cur); !errors.Is(err, ErrUnsupported) {
 			t.Errorf("CheckPath(%q) = %v, want ErrUnsupported", p, err)
 		}
 	}
@@ -32,7 +33,7 @@ func TestCheckPathText(t *testing.T) {
 		filepath.Join(dir, "com10.md"),
 		filepath.Join(dir, "missing", "x.md"),
 	} {
-		if err := CheckPath(p, cur); err != nil {
+		if _, err := CheckPath(p, cur); err != nil {
 			t.Errorf("CheckPath(%q) = %v, want nil", p, err)
 		}
 	}
@@ -59,7 +60,7 @@ func TestCheckPathLinks(t *testing.T) {
 	link("loop1", "loop2")
 
 	for _, name := range []string{"img.png", "assets/x.png"} {
-		if err := CheckPath(filepath.Join(root, filepath.FromSlash(name)), cur); !errors.Is(err, ErrUnsupported) {
+		if _, err := CheckPath(filepath.Join(root, filepath.FromSlash(name)), cur); !errors.Is(err, ErrUnsupported) {
 			t.Errorf("CheckPath(%s) = %v, want ErrUnsupported", name, err)
 		}
 		if _, err := Resolve(root, cur, name); !errors.Is(err, ErrUnsupported) {
@@ -67,11 +68,11 @@ func TestCheckPathLinks(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"rel/a.png", "abs/a.png"} {
-		if err := CheckPath(filepath.Join(root, filepath.FromSlash(name)), cur); err != nil {
+		if _, err := CheckPath(filepath.Join(root, filepath.FromSlash(name)), cur); err != nil {
 			t.Errorf("CheckPath(%s) = %v", name, err)
 		}
 	}
-	if err := CheckPath(filepath.Join(root, "loop1"), cur); !errors.Is(err, ErrUnsupported) {
+	if _, err := CheckPath(filepath.Join(root, "loop1"), cur); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("link loop: %v", err)
 	}
 }
@@ -104,7 +105,7 @@ func TestImageOutsideFolder(t *testing.T) {
 }
 
 func TestRenderDropsImageMaps(t *testing.T) {
-	html, err := NewRenderer().Render([]byte(`<img src="a.png" usemap="#m"><map name="m"><area shape="rect" coords="0,0,9,9" href="https://evil.example"></map>` + "\n\nPress <kbd>Ctrl</kbd>\n"))
+	html, err := NewRenderer().Render(context.Background(), []byte(`<img src="a.png" usemap="#m"><map name="m"><area shape="rect" coords="0,0,9,9" href="https://evil.example"></map>`+"\n\nPress <kbd>Ctrl</kbd>\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +123,7 @@ func TestRenderTimeout(t *testing.T) {
 	r := NewRenderer()
 	r.timeout = 50 * time.Millisecond
 	// Unclosed links make goldmark's work grow with the square of the size.
-	if _, err := r.Render([]byte(strings.Repeat("[a](", 40000))); !errors.Is(err, ErrTooSlow) {
+	if _, err := r.Render(context.Background(), []byte(strings.Repeat("[a](", 40000))); !errors.Is(err, ErrTooSlow) {
 		t.Errorf("err = %v, want ErrTooSlow", err)
 	}
 }
@@ -158,9 +159,57 @@ func FuzzResolve(f *testing.F) {
 		}
 		switch target.Kind {
 		case Markdown, Local:
-			if uncShare(target.Path) != "" || CheckPath(target.Path, cur) != nil {
+			if _, err := CheckPath(target.Path, cur); uncShare(target.Path) != "" || err != nil {
 				t.Fatalf("Resolve(%q) returned an unsafe path %q", href, target.Path)
 			}
 		}
 	})
+}
+
+// Links on disk (from git with Developer Mode, or an extracted archive) must
+// not lead the viewer anywhere CheckPath refuses, nor out of the folder.
+// A device name stands in for \\attacker\share, which Linux can't express.
+func TestLinkedLookups(t *testing.T) {
+	base := t.TempDir()
+	write(t, base, map[string]string{"repo/doc.md": "", "repo/sub/": "", "outside/con.md": "# secret", "outside/private.png": "PNG"})
+	root := filepath.Join(base, "repo")
+	cur := filepath.Join(root, "doc.md")
+	link := func(target, name string) {
+		t.Helper()
+		if err := os.Symlink(target, filepath.Join(root, filepath.FromSlash(name))); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+	}
+	link(filepath.Join(base, "outside", "con.md"), "sub/README.md")
+	link(filepath.Join(base, "outside", "con.md"), ".git")
+	link(filepath.Join(base, "outside", "private.png"), "pic.png")
+
+	if got := FolderIndex(filepath.Join(root, "sub"), cur); got != "" {
+		t.Errorf("FolderIndex followed a refused link: %s", got)
+	}
+	if tg, err := Resolve(root, cur, "sub/"); err == nil && tg.Kind == Markdown {
+		t.Errorf("folder link opened a refused README: %+v", tg)
+	}
+	if got := RepoRoot(filepath.Join(root, "sub")); got != root {
+		t.Errorf("RepoRoot = %s", got) // .git is seen, not followed
+	}
+	if _, err := ImageDataURI(root, cur, "pic.png"); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("image linked from outside the folder: %v", err)
+	}
+}
+
+func TestDeviceAndVolumeNames(t *testing.T) {
+	for _, n := range []string{"COM¹.png", "lpt³", "COM².md"} {
+		if !isDeviceName(n) {
+			t.Errorf("%s not a device", n)
+		}
+	}
+	for vol, want := range map[string]bool{
+		"C:": true, `\\?\C:`: true, `\\?\Volume{0a1b2c3d-0000-0000-0000-100000000000}`: true,
+		`\\?\UNC\srv\s`: false, `\\srv\s`: false, `\\.\C:`: false, `\\?\GLOBALROOT`: false,
+	} {
+		if got := isLocalVolume(vol); got != want {
+			t.Errorf("isLocalVolume(%q) = %v", vol, got)
+		}
+	}
 }
