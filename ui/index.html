@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-{{NONCE}}'; style-src 'unsafe-inline'; img-src data: https: http:; font-src data:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-{{NONCE}}'; style-src 'unsafe-inline'; img-src data: https:; font-src data:">
 <title>MD Viewer</title>
 <style>
 :root {
@@ -38,7 +38,8 @@ body.no-side #side { display: none; }
 #path { flex: 1; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   direction: rtl; text-align: left; padding: 0 8px; }
 
-#side { overflow: auto; border-right: 1px solid var(--border); background: var(--side-bg); padding: 8px 4px; font-size: 13px; }
+/* Explicit columns: a hidden sidebar must not pull #main into its slot. */
+#side { grid-column: 1; overflow: auto; border-right: 1px solid var(--border); background: var(--side-bg); padding: 8px 4px; font-size: 13px; }
 #side .root { font-weight: 600; padding: 2px 8px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #side ul { list-style: none; margin: 0; padding: 0 0 0 12px; }
 #side > ul { padding-left: 0; }
@@ -52,7 +53,7 @@ body.no-side #side { display: none; }
 #side li > span.active { background: var(--active); color: var(--active-fg); font-weight: 600; }
 #side .note { color: var(--muted); padding: 8px; }
 
-#main { overflow: auto; position: relative; outline: none; }
+#main { grid-column: 2; overflow: auto; position: relative; outline: none; }
 #doc { max-width: 900px; margin: 0 auto; padding: 32px 40px 80px; }
 
 #welcome { display: none; max-width: 520px; margin: 15vh auto 0; text-align: center; color: var(--muted); padding: 0 16px; }
