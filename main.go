@@ -5,7 +5,7 @@ package main
 
 // Regenerate the Windows resources (icon, manifest, version info) after
 // editing winres/.
-//go:generate go tool go-winres make --arch amd64
+//go:generate go tool go-winres make --arch amd64,arm64
 
 import (
 	"flag"

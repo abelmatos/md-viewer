@@ -4,6 +4,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Indirect dependencies too: the sanitiser's golang.org/x/net is one.
+    allow:
+      - dependency-type: all
     groups:
       go-deps:
         patterns: ["*"]
