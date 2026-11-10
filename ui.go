@@ -6,7 +6,7 @@ import (
 	"encoding/base64"
 	"strings"
 
-	"github.com/abelmatos/md-viewer/internal/doc"
+	"github.com/abelmatos/md-viewer/internal/render"
 )
 
 const appTitle = "MD Viewer"
@@ -18,7 +18,7 @@ var indexHTML string
 // bridge key, and a fresh nonce, so only the page's own script runs: the
 // Content Security Policy blocks any script that slips into a document.
 func shellHTML(key string) (string, error) {
-	css, err := doc.CodeCSS()
+	css, err := render.CodeCSS()
 	if err != nil {
 		return "", err
 	}

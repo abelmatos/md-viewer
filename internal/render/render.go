@@ -1,6 +1,7 @@
-// Package doc renders Markdown files and resolves what their links point to.
-// It has no Windows dependencies, so it is tested on any platform.
-package doc
+// Package render turns Markdown into sanitised HTML: GitHub-flavoured
+// Markdown, an explicit allowlist of what may reach the page, and limits on
+// size and rendering time.
+package render
 
 import (
 	"bytes"

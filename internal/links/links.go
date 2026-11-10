@@ -1,4 +1,7 @@
-package doc
+// Package links works out what a document points to: other Markdown
+// files, web and mail links, local files and images. Every path it returns
+// has passed paths.CheckPath.
+package links
 
 import (
 	"errors"
@@ -8,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/abelmatos/md-viewer/internal/paths"
 )
 
 // Kind says what a link points to.
@@ -34,28 +39,17 @@ type Target struct {
 	URL      string // External
 }
 
-// ErrUnsupported is returned for links with a scheme the viewer won't follow,
-// such as javascript: or file:.
-var ErrUnsupported = errors.New("unsupported link")
-
-var markdownExts = map[string]bool{".md": true, ".markdown": true, ".mdown": true, ".mkd": true, ".mkdn": true}
-
-// IsMarkdown reports whether path has a Markdown file extension.
-func IsMarkdown(path string) bool {
-	return markdownExts[strings.ToLower(filepath.Ext(path))]
-}
-
 // indexNames are the files shown when a link or the user opens a folder.
 var indexNames = []string{"README.md", "readme.md", "Readme.md", "index.md", "INDEX.md"}
 
 // FolderIndex returns the README or index file of dir, or "" if it has
-// none. Each candidate passes CheckPath (with current as the document, or
+// none. Each candidate passes paths.CheckPath (with current as the document, or
 // the folder itself when the user opened it) before it is looked at: a
 // README.md can be a link to a network share.
 func FolderIndex(dir, current string) string {
 	for _, n := range indexNames {
 		p := filepath.Join(dir, n)
-		real, err := CheckPath(p, current)
+		real, err := paths.CheckPath(p, current)
 		if err != nil {
 			continue
 		}
@@ -72,7 +66,7 @@ func FolderIndex(dir, current string) string {
 func Resolve(root, current, href string) (Target, error) {
 	href = strings.TrimSpace(href)
 	if href == "" {
-		return Target{}, ErrUnsupported
+		return Target{}, paths.ErrUnsupported
 	}
 	if frag, ok := strings.CutPrefix(href, "#"); ok {
 		return Target{Kind: Anchor, Fragment: unescape(frag)}, nil
@@ -84,21 +78,21 @@ func Resolve(root, current, href string) (Target, error) {
 		case "mailto":
 			return Target{Kind: External, URL: cleanMailto(u)}, nil
 		}
-		return Target{}, fmt.Errorf("%w: %s", ErrUnsupported, u.Scheme)
+		return Target{}, fmt.Errorf("%w: %s", paths.ErrUnsupported, u.Scheme)
 	}
 
 	p, frag, _ := strings.Cut(href, "#")
 	p, _, _ = strings.Cut(p, "?")
 	p = unescape(p)
 	// A network path is judged on the link's own text too, before joining
-	// it to anything (CheckPath below judges the final path).
-	if err := checkText(p, current); err != nil && uncShare(p) != "" {
+	// it to anything (paths.CheckPath below judges the final path).
+	if err := paths.CheckRaw(p, current); err != nil {
 		return Target{}, err
 	}
 	p = filepath.FromSlash(p)
 	switch {
 	case filepath.VolumeName(p) != "":
-		// C:\docs\a.md, or a network path that CheckPath rules on
+		// C:\docs\a.md, or a network path that paths.CheckPath rules on
 	case strings.HasPrefix(p, string(filepath.Separator)):
 		if root == "" {
 			root = filepath.Dir(current)
@@ -107,7 +101,7 @@ func Resolve(root, current, href string) (Target, error) {
 	default:
 		p = filepath.Join(filepath.Dir(current), p)
 	}
-	real, err := CheckPath(p, current)
+	real, err := paths.CheckPath(p, current)
 	if err != nil {
 		return Target{}, err
 	}
@@ -121,7 +115,7 @@ func Resolve(root, current, href string) (Target, error) {
 	}
 	if fi.IsDir() {
 		if idx := FolderIndex(p, current); idx != "" {
-			idxReal, err := CheckPath(idx, current)
+			idxReal, err := paths.CheckPath(idx, current)
 			if err != nil {
 				return Target{}, err
 			}
@@ -129,57 +123,10 @@ func Resolve(root, current, href string) (Target, error) {
 		}
 		return Target{Kind: Local, Path: p, Real: real}, nil
 	}
-	if IsMarkdown(p) {
+	if paths.IsMarkdown(p) {
 		return Target{Kind: Markdown, Path: p, Real: real, Fragment: unescape(frag)}, nil
 	}
 	return Target{Kind: Local, Path: p, Real: real}, nil
-}
-
-// uncShare returns the \\server\share prefix of a network path (either slash
-// style, including \\?\UNC\ paths), or "" for any other path.
-func uncShare(p string) string {
-	isSep := func(c byte) bool { return c == '\\' || c == '/' }
-	// \??\ is the NT object namespace, which reaches UNC\ and devices too.
-	if len(p) >= 4 && isSep(p[0]) && p[1] == '?' && p[2] == '?' && isSep(p[3]) {
-		return `\??\`
-	}
-	if len(p) < 2 || !isSep(p[0]) || !isSep(p[1]) {
-		return ""
-	}
-	parts := strings.FieldsFunc(p[2:], func(r rune) bool { return r == '\\' || r == '/' })
-	if len(parts) >= 2 && (parts[0] == "?" || parts[0] == ".") {
-		if strings.EqualFold(parts[1], "UNC") {
-			parts = parts[2:]
-		} else {
-			return `\\` + parts[0] + `\` + parts[1] // device path, e.g. \\?\C:
-		}
-	}
-	switch len(parts) {
-	case 0:
-		return `\\`
-	case 1:
-		return `\\` + parts[0]
-	}
-	return `\\` + parts[0] + `\` + parts[1]
-}
-
-// isDrive reports whether vol is a plain drive letter such as "C:".
-func isDrive(vol string) bool {
-	return len(vol) == 2 && vol[1] == ':' && (vol[0]|0x20 >= 'a' && vol[0]|0x20 <= 'z')
-}
-
-// isLocalVolume reports whether vol is a local volume: a drive letter, the
-// same as a \\?\ device path (\\?\C:), or a volume GUID (\\?\Volume{…}),
-// which is where a junction to a mounted volume points.
-func isLocalVolume(vol string) bool {
-	if isDrive(vol) {
-		return true
-	}
-	if len(vol) < 4 || !isSeparator(rune(vol[0])) || !isSeparator(rune(vol[1])) || vol[2] != '?' || !isSeparator(rune(vol[3])) {
-		return false
-	}
-	rest := vol[4:]
-	return isDrive(rest) || (len(rest) > 8 && strings.EqualFold(rest[:7], "Volume{") && !strings.ContainsAny(rest, `\/`))
 }
 
 // cleanMailto keeps only the address and the subject, body, cc and bcc of a

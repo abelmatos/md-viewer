@@ -1,4 +1,8 @@
-package doc
+// Package paths holds the rules for touching the file system on a
+// document's behalf. Documents are untrusted: a path one of them leads to
+// must pass CheckPath before anything opens it, and is read with
+// ReadRegular.
+package paths
 
 import (
 	"errors"
@@ -11,8 +15,6 @@ import (
 	"strings"
 )
 
-// Documents are untrusted: every path one of them leads to is checked with
-// CheckPath before the file system is touched, and read with ReadRegular.
 // Checks such as "inside the open folder" compare the resolved path
 // CheckPath returns, never the path's text, which a link inside the folder
 // could point anywhere.
@@ -189,4 +191,83 @@ func SamePath(a, b string) bool {
 func Within(root, path string) bool {
 	rel, err := filepath.Rel(root, path)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+// ErrUnsupported is returned for paths and links the viewer refuses: a
+// network path, a device, a scheme such as javascript:, and so on.
+var ErrUnsupported = errors.New("unsupported path")
+
+var markdownExts = map[string]bool{".md": true, ".markdown": true, ".mdown": true, ".mkd": true, ".mkdn": true}
+
+// IsMarkdown reports whether path has a Markdown file extension.
+func IsMarkdown(path string) bool {
+	return markdownExts[strings.ToLower(filepath.Ext(path))]
+}
+
+// uncShare returns the \\server\share prefix of a network path (either slash
+// style, including \\?\UNC\ paths), or "" for any other path.
+func uncShare(p string) string {
+	isSep := func(c byte) bool { return c == '\\' || c == '/' }
+	// \??\ is the NT object namespace, which reaches UNC\ and devices too.
+	if len(p) >= 4 && isSep(p[0]) && p[1] == '?' && p[2] == '?' && isSep(p[3]) {
+		return `\??\`
+	}
+	if len(p) < 2 || !isSep(p[0]) || !isSep(p[1]) {
+		return ""
+	}
+	parts := strings.FieldsFunc(p[2:], func(r rune) bool { return r == '\\' || r == '/' })
+	if len(parts) >= 2 && (parts[0] == "?" || parts[0] == ".") {
+		if strings.EqualFold(parts[1], "UNC") {
+			parts = parts[2:]
+		} else {
+			return `\\` + parts[0] + `\` + parts[1] // device path, e.g. \\?\C:
+		}
+	}
+	switch len(parts) {
+	case 0:
+		return `\\`
+	case 1:
+		return `\\` + parts[0]
+	}
+	return `\\` + parts[0] + `\` + parts[1]
+}
+
+// isDrive reports whether vol is a plain drive letter such as "C:".
+func isDrive(vol string) bool {
+	return len(vol) == 2 && vol[1] == ':' && (vol[0]|0x20 >= 'a' && vol[0]|0x20 <= 'z')
+}
+
+// isLocalVolume reports whether vol is a local volume: a drive letter, the
+// same as a \\?\ device path (\\?\C:), or a volume GUID (\\?\Volume{…}),
+// which is where a junction to a mounted volume points.
+func isLocalVolume(vol string) bool {
+	if isDrive(vol) {
+		return true
+	}
+	if len(vol) < 4 || !isSeparator(rune(vol[0])) || !isSeparator(rune(vol[1])) || vol[2] != '?' || !isSeparator(rune(vol[3])) {
+		return false
+	}
+	rest := vol[4:]
+	return isDrive(rest) || (len(rest) > 8 && strings.EqualFold(rest[:7], "Volume{") && !strings.ContainsAny(rest, `\/`))
+}
+
+// InsideFolder reports whether the resolved path real is inside folder, also
+// resolved.
+func InsideFolder(folder, real string) bool {
+	if folder == "" {
+		return false
+	}
+	f, err := Real(folder)
+	return err == nil && Within(f, real)
+}
+
+// CheckRaw judges a link's own text, before it is joined to any folder:
+// joining can rewrite a network path (on Linux, //server/share becomes
+// /server/share). It refuses only network paths; CheckPath judges the rest
+// once the final path is known.
+func CheckRaw(p, current string) error {
+	if err := checkText(p, current); err != nil && uncShare(p) != "" {
+		return err
+	}
+	return nil
 }

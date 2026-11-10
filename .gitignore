@@ -5,3 +5,6 @@
 
 # Runtime
 *.log
+
+# Local worktrees and tool state
+/.claude/

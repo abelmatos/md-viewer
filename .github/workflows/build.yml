@@ -49,7 +49,7 @@ jobs:
         run: go test -race ./...
 
       - name: Fuzz link resolution
-        run: go test -run '^$' -fuzz FuzzResolve -fuzztime 30s ./internal/doc
+        run: go test -run '^$' -fuzz FuzzResolve -fuzztime 30s ./internal/links
 
       - name: Known vulnerabilities
         # Install for the runner first: GOOS=windows go run would build a

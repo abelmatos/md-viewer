@@ -1,9 +1,11 @@
-package doc
+package links
 
 import (
 	"errors"
 	"path/filepath"
 	"testing"
+
+	"github.com/abelmatos/md-viewer/internal/paths"
 )
 
 // "?" starts a query string, so the prefixes are percent-encoded here.
@@ -20,11 +22,8 @@ func TestResolveNetworkVolumes(t *testing.T) {
 		`\\.\pipe\evil`,
 		`\\%3F\GLOBALROOT\Device\Mup\evil\share\x.png`,
 	} {
-		if _, err := Resolve("", cur, href); !errors.Is(err, ErrUnsupported) {
-			t.Errorf("Resolve(%q) error = %v, want ErrUnsupported", href, err)
+		if _, err := Resolve("", cur, href); !errors.Is(err, paths.ErrUnsupported) {
+			t.Errorf("Resolve(%q) error = %v, want paths.ErrUnsupported", href, err)
 		}
-	}
-	if !isDrive("C:") || !isDrive("z:") || isDrive(`\\srv\s`) || isDrive("1:") {
-		t.Error("isDrive")
 	}
 }
