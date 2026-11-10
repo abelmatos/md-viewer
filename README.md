@@ -90,8 +90,11 @@ The log is at `%LOCALAPPDATA%\md-viewer\md-viewer.log`.
 
 | Path | What |
 | --- | --- |
-| `internal/doc` | Rendering, sanitising, link resolution, folder tree, history (any OS) |
-| `app.go` | Viewer state and its operations (any OS) |
+| `internal/paths` | Rules for touching the file system on a document's behalf: network paths, links, devices, regular files (any OS) |
+| `internal/links` | What a document points to: other Markdown files, web and mail links, local files and images (any OS) |
+| `internal/render` | Markdown to sanitised HTML: the allowlist, size and time limits, code colours (any OS) |
+| `internal/folder` | The sidebar's list of Markdown files, within limits (any OS) |
+| `app.go`, `history.go` | Viewer state, its operations and the back/forward history (any OS) |
 | `bridge.go` | The page–Go message bridge: key check, methods, replies (any OS) |
 | `ui/index.html` | The page: layout, styles, and the script that renders views |
 | `*_windows.go` | Window, WebView2, open dialogs, Explorer and browser hand-off, log |

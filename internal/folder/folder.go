@@ -1,13 +1,16 @@
-package doc
+// Package folder lists the Markdown files of a folder for the sidebar,
+// within limits on files, entries and time.
+package folder
 
 import (
 	"context"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/abelmatos/md-viewer/internal/paths"
 )
 
 // Limits for listing a folder, so opening a huge one (or a whole drive)
@@ -57,7 +60,7 @@ func Tree(ctx context.Context, root string) (tree *Node, truncated bool, err err
 			}
 			return nil
 		}
-		if !d.Type().IsRegular() || !IsMarkdown(name) {
+		if !d.Type().IsRegular() || !paths.IsMarkdown(name) {
 			return nil
 		}
 		if count >= MaxTreeFiles {
@@ -119,10 +122,4 @@ func FirstFile(n *Node) string {
 		}
 	}
 	return ""
-}
-
-// IsDir reports whether path is an existing folder.
-func IsDir(path string) bool {
-	fi, err := os.Stat(path)
-	return err == nil && fi.IsDir()
 }

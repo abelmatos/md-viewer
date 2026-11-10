@@ -8,7 +8,10 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/abelmatos/md-viewer/internal/doc"
+	"github.com/abelmatos/md-viewer/internal/folder"
+	"github.com/abelmatos/md-viewer/internal/links"
+	"github.com/abelmatos/md-viewer/internal/paths"
+	"github.com/abelmatos/md-viewer/internal/render"
 )
 
 // Platform is what the app needs from the operating system. Its methods may
@@ -39,8 +42,8 @@ type View struct {
 	CanForward bool `json:"canForward"`
 	// Tree is set only when the sidebar changes (another folder was opened,
 	// or on reload).
-	Tree      *doc.Node `json:"tree,omitempty"`
-	Truncated bool      `json:"truncated,omitempty"`
+	Tree      *folder.Node `json:"tree,omitempty"`
+	Truncated bool         `json:"truncated,omitempty"`
 	// Nothing to show: no file open, or the folder has no Markdown files.
 	Empty bool `json:"empty,omitempty"`
 }
@@ -52,12 +55,12 @@ type View struct {
 // leaves the app as it was.
 type App struct {
 	platform Platform
-	renderer *doc.Renderer
+	renderer *render.Renderer
 
 	mu      sync.Mutex
 	gen     uint64 // bumped by every operation that changes what is shown
 	root    string // folder shown in the sidebar
-	history doc.History
+	history History
 	shown   string // path of the document currently in the page
 }
 
@@ -70,13 +73,13 @@ type snapshot struct {
 	gen    uint64
 	root   string
 	shown  string
-	cur    doc.Entry
+	cur    Entry
 	hasCur bool
 }
 
 // NewApp returns an app with nothing open.
 func NewApp(p Platform) *App {
-	return &App{platform: p, renderer: doc.NewRenderer()}
+	return &App{platform: p, renderer: render.NewRenderer()}
 }
 
 // begin starts an operation.
@@ -117,37 +120,37 @@ func (a *App) Open(path string) (*View, error) {
 	if fi.IsDir() {
 		newRoot = abs
 	} else {
-		if !doc.IsMarkdown(abs) {
+		if !paths.IsMarkdown(abs) {
 			return nil, fmt.Errorf("not a Markdown file: %s", abs)
 		}
 		file = abs
-		if s.root == "" || !doc.Within(s.root, abs) {
-			newRoot = doc.RepoRoot(filepath.Dir(abs))
+		if s.root == "" || !paths.Within(s.root, abs) {
+			newRoot = links.RepoRoot(filepath.Dir(abs))
 		}
 	}
 
-	var tree *doc.Node
+	var tree *folder.Node
 	var truncated bool
-	rootChanged := !doc.SamePath(newRoot, s.root)
+	rootChanged := !paths.SamePath(newRoot, s.root)
 	if rootChanged {
-		if tree, truncated, err = doc.Tree(context.Background(), newRoot); err != nil {
+		if tree, truncated, err = folder.Tree(context.Background(), newRoot); err != nil {
 			return nil, err
 		}
 	}
 	if file == "" {
-		if file = doc.FolderIndex(abs, abs); file == "" && tree != nil {
-			file = doc.FirstFile(tree)
+		if file = links.FolderIndex(abs, abs); file == "" && tree != nil {
+			file = folder.FirstFile(tree)
 		}
 	}
 	if file == "" {
 		v := &View{Empty: true, Tree: tree, Truncated: truncated}
 		return v, a.commit(s, func() {
-			a.root, a.history, a.shown = newRoot, doc.History{}, ""
+			a.root, a.history, a.shown = newRoot, History{}, ""
 			a.platform.SetTitle(appTitle)
 		})
 	}
 
-	e := doc.Entry{Path: file}
+	e := Entry{Path: file}
 	v, err := a.render(e, s.shown, rootChanged)
 	if err != nil {
 		return nil, err // nothing changed
@@ -169,19 +172,19 @@ func (a *App) Navigate(href string, scroll float64) (*View, error) {
 	if !s.hasCur {
 		return nil, errors.New("no document open")
 	}
-	t, err := doc.Resolve(s.root, s.cur.Path, href)
+	t, err := links.Resolve(s.root, s.cur.Path, href)
 	if err != nil {
 		return nil, err
 	}
 	switch t.Kind {
-	case doc.External:
+	case links.External:
 		return nil, a.platform.OpenURL(t.URL)
-	case doc.Local:
+	case links.Local:
 		return nil, a.platform.Reveal(t.Path)
-	case doc.Anchor:
-		return a.visit(s, doc.Entry{Path: s.cur.Path, Fragment: t.Fragment}, scroll)
+	case links.Anchor:
+		return a.visit(s, Entry{Path: s.cur.Path, Fragment: t.Fragment}, scroll)
 	default:
-		return a.visit(s, doc.Entry{Path: t.Path, Fragment: t.Fragment}, scroll)
+		return a.visit(s, Entry{Path: t.Path, Fragment: t.Fragment}, scroll)
 	}
 }
 
@@ -189,23 +192,23 @@ func (a *App) Navigate(href string, scroll float64) (*View, error) {
 // must be a Markdown file inside the open folder.
 func (a *App) Show(path string, scroll float64) (*View, error) {
 	s := a.begin()
-	if s.root == "" || !filepath.IsAbs(path) || !doc.IsMarkdown(path) || !doc.Within(s.root, path) {
-		return nil, fmt.Errorf("%w: %s", doc.ErrUnsupported, path)
+	if s.root == "" || !filepath.IsAbs(path) || !paths.IsMarkdown(path) || !paths.Within(s.root, path) {
+		return nil, fmt.Errorf("%w: %s", paths.ErrUnsupported, path)
 	}
 	// Compare the resolved path too: a link inside the folder can point
 	// anywhere.
-	real, err := doc.CheckPath(path, s.root)
+	real, err := paths.CheckPath(path, s.root)
 	if err != nil {
 		return nil, err
 	}
-	if !doc.InsideFolder(s.root, real) {
-		return nil, fmt.Errorf("%w: %s", doc.ErrUnsupported, path)
+	if !paths.InsideFolder(s.root, real) {
+		return nil, fmt.Errorf("%w: %s", paths.ErrUnsupported, path)
 	}
-	return a.visit(s, doc.Entry{Path: path}, scroll)
+	return a.visit(s, Entry{Path: path}, scroll)
 }
 
 // visit renders e and, if that works, adds it to the history.
-func (a *App) visit(s snapshot, e doc.Entry, scroll float64) (*View, error) {
+func (a *App) visit(s snapshot, e Entry, scroll float64) (*View, error) {
 	v, err := a.render(e, s.shown, false)
 	if err != nil {
 		return nil, err
@@ -262,18 +265,18 @@ func (a *App) Resume() (*View, error) {
 // full re-reads the sidebar and the current document. A nil scroll keeps
 // the history's.
 func (a *App) full(s snapshot, scroll *float64) (*View, error) {
-	var tree *doc.Node
+	var tree *folder.Node
 	var truncated bool
 	if s.root != "" {
 		var err error
-		if tree, truncated, err = doc.Tree(context.Background(), s.root); err != nil {
+		if tree, truncated, err = folder.Tree(context.Background(), s.root); err != nil {
 			return nil, err
 		}
 	}
 	if !s.hasCur {
 		return &View{Empty: true, Tree: tree, Truncated: truncated}, nil
 	}
-	e := doc.Entry{Path: s.cur.Path, Scroll: s.cur.Scroll}
+	e := Entry{Path: s.cur.Path, Scroll: s.cur.Scroll}
 	if scroll != nil {
 		e.Scroll = *scroll
 	}
@@ -295,10 +298,10 @@ func (a *App) Image(docPath, src string) (string, error) {
 	a.mu.Lock()
 	root, shown := a.root, a.shown
 	a.mu.Unlock()
-	if shown == "" || !doc.SamePath(docPath, shown) {
+	if shown == "" || !paths.SamePath(docPath, shown) {
 		return "", errors.New("not the shown document")
 	}
-	return doc.ImageDataURI(root, shown, src)
+	return links.ImageDataURI(root, shown, src)
 }
 
 // describe fills in the history buttons and sets the window title. It runs
@@ -310,13 +313,13 @@ func (a *App) describe(v *View) {
 
 // render builds the view for e without touching the app's state. Unless
 // force is set, it skips the work when e's document is the one shown.
-func (a *App) render(e doc.Entry, shown string, force bool) (*View, error) {
+func (a *App) render(e Entry, shown string, force bool) (*View, error) {
 	v := &View{Path: e.Path, Name: filepath.Base(e.Path), Fragment: e.Fragment, Scroll: e.Scroll}
-	if !force && shown != "" && doc.SamePath(e.Path, shown) {
+	if !force && shown != "" && paths.SamePath(e.Path, shown) {
 		v.SameDoc = true
 		return v, nil
 	}
-	src, err := doc.ReadRegular(e.Path, doc.MaxDocSize)
+	src, err := paths.ReadRegular(e.Path, render.MaxDocSize)
 	if err != nil {
 		return nil, err
 	}

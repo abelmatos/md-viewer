@@ -1,4 +1,4 @@
-package doc
+package main
 
 // Entry is one place in the navigation history.
 type Entry struct {
@@ -7,7 +7,8 @@ type Entry struct {
 	Scroll   float64 // scroll offset when the user left the entry
 }
 
-// History is a browser-style back/forward list. The zero value is empty.
+// History is the viewer's browser-style back/forward list. The zero value
+// is empty.
 type History struct {
 	entries []Entry
 	pos     int // index of the current entry; meaningless when empty

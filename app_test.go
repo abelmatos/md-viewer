@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/abelmatos/md-viewer/internal/doc"
+	"github.com/abelmatos/md-viewer/internal/render"
 )
 
 type fakePlatform struct {
@@ -199,7 +199,7 @@ func TestFailedOpenKeepsState(t *testing.T) {
 	if err := os.WriteFile(big, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Truncate(big, doc.MaxDocSize+1); err != nil {
+	if err := os.Truncate(big, render.MaxDocSize+1); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.Open(other); err == nil {

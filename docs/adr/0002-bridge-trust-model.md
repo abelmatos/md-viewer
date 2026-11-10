@@ -15,7 +15,7 @@ real trust boundary is the page–Go bridge, not link resolution alone.
 Treat every document, and everything the page sends, as untrusted, with
 several independent layers:
 
-1. **Sanitiser allowlist** (`internal/doc/render.go`). An explicit list of
+1. **Sanitiser allowlist** (`internal/render`). An explicit list of
    what GitHub renders: no scripts, event handlers, styles, forms, iframes
    or image maps. Document ids get a `user-content-` prefix in the page so
    they can't take the app's own ids.
@@ -34,7 +34,7 @@ several independent layers:
    document; images must be image files inside the open folder or the
    document's folder, for the document actually shown.
 7. **Paths from documents are checked before the file system is touched**
-   (`doc.CheckPath`): only drive letters or the document's own network
+   (`paths.CheckPath`, in `internal/paths`): only drive letters or the document's own network
    share (touching another share leaks the NTLM hash), also after following
    symbolic links and junctions element by element; no device names
    (`COM1.png`), no alternate data streams; only regular files are read.
