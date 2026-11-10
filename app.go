@@ -79,7 +79,9 @@ type snapshot struct {
 
 // NewApp returns an app with nothing open.
 func NewApp(p Platform) *App {
-	return &App{platform: p, renderer: render.NewRenderer()}
+	r := render.NewRenderer()
+	r.Isolate = renderInChild // documents over render.IsolateAbove
+	return &App{platform: p, renderer: r}
 }
 
 // begin starts an operation.

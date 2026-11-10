@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -336,5 +338,38 @@ func TestShowRefusesLinkOutOfFolder(t *testing.T) {
 	must(t)(a.Open(root))
 	if _, err := a.Show(filepath.Join(root, "notes", "link.md"), 0); err == nil {
 		t.Error("Show followed a link out of the folder")
+	}
+}
+
+// TestMain lets the test binary act as the render child, as the exe does.
+func TestMain(m *testing.M) {
+	if len(os.Args) == 2 && os.Args[1] == renderFlag {
+		os.Exit(renderChild())
+	}
+	os.Exit(m.Run())
+}
+
+func TestRenderInChild(t *testing.T) {
+	big := "# Big\n\n" + strings.Repeat("Some *text* with `code`.\n\n", 4000) // > IsolateAbove
+	html, err := renderInChild(context.Background(), []byte(big))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(html, `<h1 id="big">Big</h1>`) || !strings.Contains(html, "<code>code</code>") {
+		t.Errorf("child output: %.200s", html)
+	}
+}
+
+func TestRunawayChildIsKilled(t *testing.T) {
+	// Minutes of work in-process; the child must be gone at the deadline.
+	slow := []byte(strings.Repeat("[a](", 300000))
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := renderInChild(ctx, slow); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want DeadlineExceeded", err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("returned after %v: the child wasn't killed", d)
 	}
 }
