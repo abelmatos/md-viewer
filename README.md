@@ -1,5 +1,8 @@
 # md-viewer
 
+[![build](https://github.com/abelmatos/md-viewer/actions/workflows/build.yml/badge.svg)](https://github.com/abelmatos/md-viewer/actions/workflows/build.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/abelmatos/md-viewer/badge)](https://scorecard.dev/viewer/?uri=github.com/abelmatos/md-viewer)
+
 A small, free Windows viewer for Markdown files. It renders them like
 GitHub, lists every Markdown file in the folder, and follows links between
 them with back and forward.
