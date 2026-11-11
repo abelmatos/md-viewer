@@ -31,6 +31,10 @@ type Platform interface {
 // View is what the page shows. The page calls the app's methods and renders
 // the View they return.
 type View struct {
+	// Seq is the number of the operation that committed the view; newer
+	// views have larger numbers. The page draws a view only if it is newer
+	// than the last one it drew, so it and Go agree on what is shown.
+	Seq      uint64  `json:"seq"`
 	Path     string  `json:"path,omitempty"`
 	Name     string  `json:"name,omitempty"`
 	HTML     string  `json:"html"`
@@ -110,14 +114,16 @@ func overtaken(err error) error {
 	return err
 }
 
-// commit runs f under the lock if no other operation started since s.
-func (a *App) commit(s snapshot, f func()) error {
+// commit runs f under the lock if no other operation started since s, and
+// stamps v with the operation's number.
+func (a *App) commit(s snapshot, v *View, f func()) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.gen != s.gen {
 		return errSuperseded
 	}
 	f()
+	v.Seq = s.gen
 	return nil
 }
 
@@ -163,7 +169,7 @@ func (a *App) Open(path string) (*View, error) {
 	}
 	if file == "" {
 		v := &View{Empty: true, Tree: tree, Truncated: truncated}
-		return v, a.commit(s, func() {
+		return v, a.commit(s, v, func() {
 			a.root, a.history, a.shown = newRoot, History{}, ""
 			a.platform.SetTitle(appTitle)
 		})
@@ -175,7 +181,7 @@ func (a *App) Open(path string) (*View, error) {
 		return nil, err // nothing changed
 	}
 	v.Tree, v.Truncated = tree, truncated
-	return v, a.commit(s, func() {
+	return v, a.commit(s, v, func() {
 		a.root = newRoot
 		a.history.Visit(e)
 		a.shown = e.Path
@@ -232,7 +238,7 @@ func (a *App) visit(s snapshot, e Entry, scroll float64) (*View, error) {
 	if err != nil {
 		return nil, err
 	}
-	return v, a.commit(s, func() {
+	return v, a.commit(s, v, func() {
 		a.history.SetScroll(scroll)
 		a.history.Visit(e)
 		a.shown = e.Path
@@ -261,7 +267,7 @@ func (a *App) step(scroll float64, delta int) (*View, error) {
 	if err != nil {
 		return nil, err // the history stays where it was
 	}
-	return v, a.commit(s, func() {
+	return v, a.commit(s, v, func() {
 		a.history.SetScroll(scroll)
 		a.history.Move(delta)
 		a.shown = e.Path
@@ -293,7 +299,8 @@ func (a *App) full(s snapshot, scroll *float64) (*View, error) {
 		}
 	}
 	if !s.hasCur {
-		return &View{Empty: true, Tree: tree, Truncated: truncated}, nil
+		v := &View{Empty: true, Tree: tree, Truncated: truncated}
+		return v, a.commit(s, v, func() {})
 	}
 	e := Entry{Path: s.cur.Path, Scroll: s.cur.Scroll}
 	if scroll != nil {
@@ -304,7 +311,7 @@ func (a *App) full(s snapshot, scroll *float64) (*View, error) {
 		return nil, err
 	}
 	v.Tree, v.Truncated = tree, truncated
-	return v, a.commit(s, func() {
+	return v, a.commit(s, v, func() {
 		a.shown = e.Path
 		a.describe(v)
 	})

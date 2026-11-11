@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"strconv"
 	"sync/atomic"
 )
@@ -15,16 +16,19 @@ import (
 //
 // The page sends requests with chrome.webview.postMessage:
 //
-//	{"key": "<per-launch secret>", "id": 7, "method": "mdNavigate", "params": ["docs/a.md", 120]}
+//	{"key": "<per-launch secret>", "session": "<per-load id>", "id": 7, "method": "mdNavigate", "params": ["docs/a.md", 120]}
 //
 // Go runs the method and answers by evaluating, in the page,
 //
-//	if (window.__mdKey === "<key>") window.mdReply(7, true, <result JSON>)
+//	if (window.__mdKey === "<key>" && window.__mdSession === "<session>") window.mdReply(7, true, <result JSON>)
 //
 // The key is generated at launch and exists only inside the app's own page
 // (see shellHTML), so a request from any other document is dropped and an
-// answer never runs in one. Methods receive only JSON values and check them
-// like any other untrusted input.
+// answer never runs in one. The session is a random id the page picks each
+// time it loads: when the app's page is put back, request ids start at 1
+// again, and the session keeps a late answer to the previous load from
+// resolving the new load's request. Methods receive only JSON values and
+// check them like any other untrusted input.
 //
 // Every method runs on its own goroutine, so file access and rendering never
 // freeze the window. What must happen on the UI thread (the open dialogs,
@@ -32,10 +36,11 @@ import (
 
 // rpcRequest is one call from the page.
 type rpcRequest struct {
-	Key    string            `json:"key"`
-	ID     int               `json:"id"`
-	Method string            `json:"method"`
-	Params []json.RawMessage `json:"params"`
+	Key     string            `json:"key"`
+	Session string            `json:"session"`
+	ID      int               `json:"id"`
+	Method  string            `json:"method"`
+	Params  []json.RawMessage `json:"params"`
 }
 
 type handler func(params []json.RawMessage) (any, error)
@@ -77,16 +82,24 @@ func (b *Bridge) Handle(msg string) {
 		log.Printf("bridge: dropped %q without the page key", req.Method)
 		return
 	}
+	// The session is written into the reply's script.
+	if !sessionID.MatchString(req.Session) {
+		log.Printf("bridge: dropped %q with a malformed session", req.Method)
+		return
+	}
 	h, ok := b.methods[req.Method]
 	if !ok {
-		b.reply(req.ID, nil, fmt.Errorf("unknown method %q", req.Method))
+		b.reply(req.Session, req.ID, nil, fmt.Errorf("unknown method %q", req.Method))
 		return
 	}
 	go func() {
 		res, err := safeCall(h, req.Params)
-		b.reply(req.ID, res, err)
+		b.reply(req.Session, req.ID, res, err)
 	}()
 }
+
+// sessionID is what the page's per-load session id must look like.
+var sessionID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 // safeCall runs h, turning a panic into an error so one bad request can't
 // take the app down.
@@ -100,8 +113,8 @@ func safeCall(h handler, params []json.RawMessage) (res any, err error) {
 	return h(params)
 }
 
-// reply sends a result or error to the page.
-func (b *Bridge) reply(id int, res any, err error) {
+// reply sends a result or error to the page load that asked.
+func (b *Bridge) reply(session string, id int, res any, err error) {
 	ok, value := true, res
 	if err != nil {
 		ok, value = false, err.Error()
@@ -111,7 +124,8 @@ func (b *Bridge) reply(id int, res any, err error) {
 		ok, data = false, []byte(strconv.Quote(mErr.Error()))
 	}
 	b.post(func() {
-		b.eval(b.guard("window.mdReply(" + strconv.Itoa(id) + "," + strconv.FormatBool(ok) + "," + string(data) + ")"))
+		b.eval(b.guard(" && window.__mdSession === "+strconv.Quote(session),
+			"window.mdReply("+strconv.Itoa(id)+","+strconv.FormatBool(ok)+","+string(data)+")"))
 	})
 }
 
@@ -119,12 +133,13 @@ func (b *Bridge) reply(id int, res any, err error) {
 // request (e.g. the browser didn't open a link). Safe from any goroutine.
 func (b *Bridge) Notify(err error) {
 	data, _ := json.Marshal(err.Error())
-	b.post(func() { b.eval(b.guard("window.mdFail(" + string(data) + ")")) })
+	b.post(func() { b.eval(b.guard("", "window.mdFail("+string(data)+")")) })
 }
 
-// guard makes script run only in the app's own page.
-func (b *Bridge) guard(script string) string {
-	return "if (window.__mdKey === " + strconv.Quote(b.key) + ") { " + script + " }"
+// guard makes script run only in the app's own page, and only where cond
+// (a further "&& …" test, or "") holds too.
+func (b *Bridge) guard(cond, script string) string {
+	return "if (window.__mdKey === " + strconv.Quote(b.key) + cond + ") { " + script + " }"
 }
 
 // register adds a method. Register all methods before the page loads.

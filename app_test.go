@@ -419,3 +419,46 @@ func TestOvertakenRendersAreCancelled(t *testing.T) {
 		}
 	}
 }
+
+// Every view the app returns carries the number of the operation that
+// committed it, newer than any view before: the page draws a view only if
+// it is newer than the one it drew last (#3).
+func TestViewsCarrySeq(t *testing.T) {
+	root, _, a := setup(t)
+	var last uint64
+	check := func(name string, v *View, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if v == nil {
+			return // handed to another app: nothing to draw
+		}
+		if v.Seq <= last {
+			t.Errorf("%s: seq %d, not newer than %d", name, v.Seq, last)
+		}
+		last = v.Seq
+	}
+	v, err := a.Resume()
+	check("resume, nothing open", v, err)
+	v, err = a.Open(root)
+	check("open", v, err)
+	v, err = a.Navigate("docs/guide.md", 0)
+	check("navigate", v, err)
+	v, err = a.Navigate("#install", 0)
+	check("anchor", v, err)
+	v, err = a.Navigate("https://example.com", 0)
+	check("external", v, err)
+	v, err = a.Back(0)
+	check("back", v, err)
+	v, err = a.Forward(0)
+	check("forward", v, err)
+	v, err = a.Show(filepath.Join(root, "notes", "a.md"), 0)
+	check("show", v, err)
+	v, err = a.Reload(0)
+	check("reload", v, err)
+	v, err = a.Resume()
+	check("resume", v, err)
+	v, err = a.Open(t.TempDir())
+	check("open empty folder", v, err)
+}

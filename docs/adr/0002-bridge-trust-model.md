@@ -29,6 +29,9 @@ several independent layers:
    only in the app's page. Requests without it are dropped, and replies are
    evaluated only in a document that holds it (`window.__mdKey`, set
    non-writable by the page). No bindings are injected into documents.
+   Each load of the page also picks a random session id
+   (`window.__mdSession`), sent with every request and checked in the
+   reply's guard, so an answer reaches only the load that asked.
 6. **Methods check their inputs.** The page can only show Markdown files
    inside the open folder (`Show`); links resolve relative to the shown
    document; images must be image files inside the open folder or the

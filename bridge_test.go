@@ -3,7 +3,10 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -48,11 +51,25 @@ func newTestBridge(t *testing.T) *testBridge {
 
 func (tb *testBridge) send(t *testing.T, key string, id int, method string, params ...any) {
 	t.Helper()
+	tb.sendFull(t, key, testSession, id, method, params...)
+}
+
+// testSession is the page-load id send uses.
+const testSession = "test-session"
+
+// sendSession sends a request with the key and the given page-load id.
+func (tb *testBridge) sendSession(t *testing.T, session string, id int, method string, params ...any) {
+	t.Helper()
+	tb.sendFull(t, tb.Key(), session, id, method, params...)
+}
+
+func (tb *testBridge) sendFull(t *testing.T, key, session string, id int, method string, params ...any) {
+	t.Helper()
 	raw := make([]json.RawMessage, len(params))
 	for i, p := range params {
 		raw[i], _ = json.Marshal(p)
 	}
-	msg, _ := json.Marshal(rpcRequest{Key: key, ID: id, Method: method, Params: raw})
+	msg, _ := json.Marshal(rpcRequest{Key: key, Session: session, ID: id, Method: method, Params: raw})
 	tb.Handle(string(msg))
 }
 
@@ -88,7 +105,7 @@ func TestBridgeKey(t *testing.T) {
 		t.Errorf("reply = %s", got)
 	}
 	// Replies run only in a document holding the key.
-	if !strings.HasPrefix(got, `if (window.__mdKey === "`+tb.Key()+`")`) {
+	if !strings.HasPrefix(got, `if (window.__mdKey === "`+tb.Key()+`" && window.__mdSession === "`+testSession+`")`) {
 		t.Errorf("reply not guarded: %s", got)
 	}
 	tb.mu.Lock()
@@ -161,4 +178,72 @@ func TestBridgeApp(t *testing.T) {
 	if got := tb.reply(t, 7); !strings.Contains(got, `"sideWidth":300`) {
 		t.Errorf("settings = %s", got)
 	}
+}
+
+// Replies run only in the page load that sent the request: a page put back
+// after a reload starts its request ids at 1 again, and a late reply to the
+// old load must not resolve the new load's request (#3).
+func TestBridgeSession(t *testing.T) {
+	tb := newTestBridge(t)
+	tb.register("ping", func([]json.RawMessage) (any, error) { return "pong", nil })
+	tb.sendSession(t, "load-One_1", 1, "ping")
+	if got := tb.reply(t, 1); !strings.HasPrefix(got, `if (window.__mdKey === "`+tb.Key()+`" && window.__mdSession === "load-One_1")`) {
+		t.Errorf("reply not guarded by the session: %s", got)
+	}
+	// The session is written into script: anything but a short plain token
+	// is dropped.
+	for i, s := range []string{"", `x" || true || "`, "a b", strings.Repeat("a", 65)} {
+		tb.sendSession(t, s, 10+i, "ping")
+	}
+	tb.sendSession(t, "ok", 20, "ping")
+	tb.reply(t, 20)
+	time.Sleep(50 * time.Millisecond) // replies to accepted requests would be in by now
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	for _, s := range tb.scripts {
+		if strings.Contains(s, "mdReply(1") && !strings.Contains(s, "mdReply(1,") {
+			t.Errorf("answered a request with a bad session: %s", s)
+		}
+	}
+}
+
+// The example from #3: a slow document is still rendering when the user
+// opens and cancels the file dialog. Go still shows the document, and its
+// view must be newer than the one the page drew, so the page draws it too.
+func TestCancelledDialogDuringSlowRender(t *testing.T) {
+	root, p, a := setup(t)
+	// Unclosed links make goldmark slow: ~50 ms at this size, several
+	// times that with the race detector.
+	if err := os.WriteFile(filepath.Join(root, "slow.md"), []byte(strings.Repeat("[a](", 3000)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tb := newTestBridge(t)
+	tb.RegisterApp(a, p, settingsStore{path: filepath.Join(t.TempDir(), "s.json")}, root)
+	tb.send(t, tb.Key(), 1, "mdStart")
+	drawn := seqOf(t, tb.reply(t, 1))
+
+	tb.send(t, tb.Key(), 2, "mdShow", filepath.Join(root, "slow.md"), 0)
+	p.pick = "" // cancelled
+	tb.send(t, tb.Key(), 3, "mdPickFile")
+	if got := tb.reply(t, 3); !strings.Contains(got, "mdReply(3,true,null)") {
+		t.Fatalf("cancelled pick = %s", got)
+	}
+	got := tb.reply(t, 2)
+	if !strings.Contains(got, `"name":"slow.md"`) {
+		t.Fatalf("slow document = %.200s", got)
+	}
+	if seq := seqOf(t, got); seq <= drawn {
+		t.Errorf("slow document's seq %d is not newer than the drawn %d", seq, drawn)
+	}
+}
+
+// seqOf returns the "seq" of the view in a reply script.
+func seqOf(t *testing.T, script string) uint64 {
+	t.Helper()
+	m := regexp.MustCompile(`"seq":(\d+)`).FindStringSubmatch(script)
+	if m == nil {
+		t.Fatalf("no seq in %.200s", script)
+	}
+	n, _ := strconv.ParseUint(m[1], 10, 64)
+	return n
 }
