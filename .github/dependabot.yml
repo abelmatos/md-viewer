@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Let new releases age a week before proposing them. Security updates
+    # ignore this.
+    cooldown:
+      default-days: 7
     # Indirect dependencies too: the sanitiser's golang.org/x/net is one.
     allow:
       - dependency-type: all
@@ -15,6 +19,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Let new releases age a week before proposing them. Security updates
+    # ignore this.
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]
