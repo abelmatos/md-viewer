@@ -52,14 +52,16 @@ type View struct {
 // goroutines. Slow work (reading, rendering, listing a folder) runs without
 // the lock, on a snapshot of the state; the result is committed only if no
 // other operation started meanwhile, so the newest click wins and a failure
-// leaves the app as it was.
+// leaves the app as it was. Starting an operation cancels the one before,
+// which stops its folder walk and kills its render child.
 type App struct {
 	platform Platform
 	renderer *render.Renderer
 
 	mu      sync.Mutex
-	gen     uint64 // bumped by every operation that changes what is shown
-	root    string // folder shown in the sidebar
+	gen     uint64             // bumped by every operation that changes what is shown
+	cancel  context.CancelFunc // ends the newest operation's context
+	root    string             // folder shown in the sidebar
 	history History
 	shown   string // path of the document currently in the page
 }
@@ -70,6 +72,7 @@ var errSuperseded = errors.New("superseded")
 
 // snapshot is the state an operation starts from.
 type snapshot struct {
+	ctx    context.Context // cancelled when a newer operation starts
 	gen    uint64
 	root   string
 	shown  string
@@ -84,13 +87,27 @@ func NewApp(p Platform) *App {
 	return &App{platform: p, renderer: r}
 }
 
-// begin starts an operation.
+// begin starts an operation and cancels the previous one.
 func (a *App) begin() snapshot {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.gen++
+	if a.cancel != nil {
+		a.cancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.cancel = cancel
 	cur, ok := a.history.Current()
-	return snapshot{gen: a.gen, root: a.root, shown: a.shown, cur: cur, hasCur: ok}
+	return snapshot{ctx: ctx, gen: a.gen, root: a.root, shown: a.shown, cur: cur, hasCur: ok}
+}
+
+// overtaken turns the error of work cancelled by a newer operation into
+// errSuperseded, which the page ignores.
+func overtaken(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return errSuperseded
+	}
+	return err
 }
 
 // commit runs f under the lock if no other operation started since s.
@@ -135,8 +152,8 @@ func (a *App) Open(path string) (*View, error) {
 	var truncated bool
 	rootChanged := !paths.SamePath(newRoot, s.root)
 	if rootChanged {
-		if tree, truncated, err = folder.Tree(context.Background(), newRoot); err != nil {
-			return nil, err
+		if tree, truncated, err = folder.Tree(s.ctx, newRoot); err != nil {
+			return nil, overtaken(err)
 		}
 	}
 	if file == "" {
@@ -153,7 +170,7 @@ func (a *App) Open(path string) (*View, error) {
 	}
 
 	e := Entry{Path: file}
-	v, err := a.render(e, s.shown, rootChanged)
+	v, err := a.render(s.ctx, e, s.shown, rootChanged)
 	if err != nil {
 		return nil, err // nothing changed
 	}
@@ -211,7 +228,7 @@ func (a *App) Show(path string, scroll float64) (*View, error) {
 
 // visit renders e and, if that works, adds it to the history.
 func (a *App) visit(s snapshot, e Entry, scroll float64) (*View, error) {
-	v, err := a.render(e, s.shown, false)
+	v, err := a.render(s.ctx, e, s.shown, false)
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +257,7 @@ func (a *App) step(scroll float64, delta int) (*View, error) {
 	if !ok {
 		return nil, nil
 	}
-	v, err := a.render(e, s.shown, false)
+	v, err := a.render(s.ctx, e, s.shown, false)
 	if err != nil {
 		return nil, err // the history stays where it was
 	}
@@ -271,8 +288,8 @@ func (a *App) full(s snapshot, scroll *float64) (*View, error) {
 	var truncated bool
 	if s.root != "" {
 		var err error
-		if tree, truncated, err = folder.Tree(context.Background(), s.root); err != nil {
-			return nil, err
+		if tree, truncated, err = folder.Tree(s.ctx, s.root); err != nil {
+			return nil, overtaken(err)
 		}
 	}
 	if !s.hasCur {
@@ -282,7 +299,7 @@ func (a *App) full(s snapshot, scroll *float64) (*View, error) {
 	if scroll != nil {
 		e.Scroll = *scroll
 	}
-	v, err := a.render(e, s.shown, true)
+	v, err := a.render(s.ctx, e, s.shown, true)
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +332,7 @@ func (a *App) describe(v *View) {
 
 // render builds the view for e without touching the app's state. Unless
 // force is set, it skips the work when e's document is the one shown.
-func (a *App) render(e Entry, shown string, force bool) (*View, error) {
+func (a *App) render(ctx context.Context, e Entry, shown string, force bool) (*View, error) {
 	v := &View{Path: e.Path, Name: filepath.Base(e.Path), Fragment: e.Fragment, Scroll: e.Scroll}
 	if !force && shown != "" && paths.SamePath(e.Path, shown) {
 		v.SameDoc = true
@@ -325,8 +342,8 @@ func (a *App) render(e Entry, shown string, force bool) (*View, error) {
 	if err != nil {
 		return nil, err
 	}
-	if v.HTML, err = a.renderer.Render(context.Background(), src); err != nil {
-		return nil, err
+	if v.HTML, err = a.renderer.Render(ctx, src); err != nil {
+		return nil, overtaken(err)
 	}
 	return v, nil
 }

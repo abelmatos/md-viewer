@@ -373,3 +373,49 @@ func TestRunawayChildIsKilled(t *testing.T) {
 		t.Errorf("returned after %v: the child wasn't killed", d)
 	}
 }
+
+// A new operation cancels the one it overtook: its render child is killed
+// and frees its slot, so the next document doesn't wait for the slow ones'
+// timeout.
+func TestOvertakenRendersAreCancelled(t *testing.T) {
+	root, _, a := setup(t)
+	// Over render.IsolateAbove, so they render in a child; each takes minutes.
+	for _, name := range []string{"slow1.md", "slow2.md"} {
+		body := strings.Repeat("[a](", 300000) + name // different content: not refused as known-slow
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(t)(a.Open(root))
+	slowDone := make(chan error, 2)
+	for i, name := range []string{"slow1.md", "slow2.md"} {
+		go func() {
+			_, err := a.Show(filepath.Join(root, name), 0)
+			slowDone <- err
+		}()
+		// Wait until it holds a render slot. Without cancellation both
+		// keep theirs; with it, the second one's start ends the first.
+		for a.renderer.Running() < i+1 && len(slowDone) == 0 {
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	start := time.Now()
+	v := must(t)(a.Show(filepath.Join(root, "notes", "a.md"), 0))
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("the next document waited %v for the overtaken renders", d)
+	}
+	if v.Name != "a.md" {
+		t.Errorf("view = %+v", v)
+	}
+	for range 2 {
+		select {
+		case err := <-slowDone:
+			if !errors.Is(err, errSuperseded) {
+				t.Errorf("overtaken render: err = %v, want errSuperseded", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("an overtaken render is still running")
+		}
+	}
+}

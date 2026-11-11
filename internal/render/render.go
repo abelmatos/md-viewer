@@ -189,6 +189,10 @@ func (r *Renderer) markSlow(sum [32]byte) {
 	r.slow[sum] = true
 }
 
+// Running returns how many renders hold a slot, including abandoned ones
+// that haven't finished yet.
+func (r *Renderer) Running() int { return len(r.slots) }
+
 // RenderNow renders src in this goroutine, with no timeout: for the child
 // process that Isolate starts.
 func (r *Renderer) RenderNow(src []byte) (string, error) { return r.render(src) }
