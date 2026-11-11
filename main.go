@@ -17,6 +17,10 @@ import (
 var version = "dev"
 
 func main() {
+	// The render child (see render_child.go) runs before anything else.
+	if len(os.Args) == 2 && os.Args[1] == renderFlag {
+		os.Exit(renderChild())
+	}
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	debug := flag.Bool("debug", false, "enable the developer tools and context menu")
 	flag.Usage = func() {

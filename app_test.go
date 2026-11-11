@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -336,5 +338,84 @@ func TestShowRefusesLinkOutOfFolder(t *testing.T) {
 	must(t)(a.Open(root))
 	if _, err := a.Show(filepath.Join(root, "notes", "link.md"), 0); err == nil {
 		t.Error("Show followed a link out of the folder")
+	}
+}
+
+// TestMain lets the test binary act as the render child, as the exe does.
+func TestMain(m *testing.M) {
+	if len(os.Args) == 2 && os.Args[1] == renderFlag {
+		os.Exit(renderChild())
+	}
+	os.Exit(m.Run())
+}
+
+func TestRenderInChild(t *testing.T) {
+	big := "# Big\n\n" + strings.Repeat("Some *text* with `code`.\n\n", 4000) // > IsolateAbove
+	html, err := renderInChild(context.Background(), []byte(big))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(html, `<h1 id="big">Big</h1>`) || !strings.Contains(html, "<code>code</code>") {
+		t.Errorf("child output: %.200s", html)
+	}
+}
+
+func TestRunawayChildIsKilled(t *testing.T) {
+	// Minutes of work in-process; the child must be gone at the deadline.
+	slow := []byte(strings.Repeat("[a](", 300000))
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := renderInChild(ctx, slow); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want DeadlineExceeded", err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("returned after %v: the child wasn't killed", d)
+	}
+}
+
+// A new operation cancels the one it overtook: its render child is killed
+// and frees its slot, so the next document doesn't wait for the slow ones'
+// timeout.
+func TestOvertakenRendersAreCancelled(t *testing.T) {
+	root, _, a := setup(t)
+	// Over render.IsolateAbove, so they render in a child; each takes minutes.
+	for _, name := range []string{"slow1.md", "slow2.md"} {
+		body := strings.Repeat("[a](", 300000) + name // different content: not refused as known-slow
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(t)(a.Open(root))
+	slowDone := make(chan error, 2)
+	for i, name := range []string{"slow1.md", "slow2.md"} {
+		go func() {
+			_, err := a.Show(filepath.Join(root, name), 0)
+			slowDone <- err
+		}()
+		// Wait until it holds a render slot. Without cancellation both
+		// keep theirs; with it, the second one's start ends the first.
+		for a.renderer.Running() < i+1 && len(slowDone) == 0 {
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	start := time.Now()
+	v := must(t)(a.Show(filepath.Join(root, "notes", "a.md"), 0))
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("the next document waited %v for the overtaken renders", d)
+	}
+	if v.Name != "a.md" {
+		t.Errorf("view = %+v", v)
+	}
+	for range 2 {
+		select {
+		case err := <-slowDone:
+			if !errors.Is(err, errSuperseded) {
+				t.Errorf("overtaken render: err = %v, want errSuperseded", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("an overtaken render is still running")
+		}
 	}
 }
