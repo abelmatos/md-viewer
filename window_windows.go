@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"syscall"
@@ -98,6 +99,15 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		x, y, cx, cy := uintptr(r.Left), uintptr(r.Top), uintptr(r.Right-r.Left), uintptr(r.Bottom-r.Top) //nolint:gosec // G115: Win32 reads these as int; negative x/y are valid
 		_, _, _ = procSetWindowPos.Call(hwnd, 0, x, y, cx, cy, swpNoZOrder|swpNoActivate)
 		return 0
+	case wmClose:
+		// Closed while WebView2 is still starting: go-webview2's Embed
+		// waits in its own message loop and would crash on the WM_QUIT
+		// that destroying the window posts, so end here.
+		if w == nil || w.browser == nil {
+			startupDone() // not a startup failure; no message box
+			log.Print("closed during startup")
+			os.Exit(0)
+		}
 	case wmDestroy:
 		_, _, _ = procPostQuitMessage.Call(0)
 		return 0
@@ -132,8 +142,8 @@ type winMsg struct {
 }
 
 // createWindow registers the class and creates the (visible) main window,
-// painted in bg until the page draws.
-func createWindow(bg uint32) (uintptr, error) {
+// painted in bg until the page draws, with a dark title bar if dark.
+func createWindow(bg uint32, dark bool) (uintptr, error) {
 	var inst windows.Handle
 	if err := windows.GetModuleHandleEx(0, nil, &inst); err != nil {
 		return 0, err
@@ -171,6 +181,8 @@ func createWindow(bg uint32) (uintptr, error) {
 	if hwnd == 0 {
 		return 0, fmt.Errorf("CreateWindowEx: %w", err)
 	}
+	// Before showing it, or Windows 10 paints the title bar light first.
+	setDarkTitleBar(hwnd, dark)
 	_, _, _ = procShowWindow.Call(hwnd, windows.SW_SHOWNORMAL)
 	_, _, _ = procUpdateWindow.Call(hwnd)
 	return hwnd, nil
