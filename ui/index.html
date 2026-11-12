@@ -148,13 +148,19 @@ body.empty #doc { display: none; }
 // The bridge key: Go answers only requests that carry it, and its replies
 // run only in a document that holds it (this one).
 Object.defineProperty(window, "__mdKey", { value: "{{KEY}}" });
+// A fresh id for this load of the page: Go answers only in the load that
+// asked, so a late answer meant for a previous load (whose request ids also
+// started at 1) can't resolve this one's requests.
+Object.defineProperty(window, "__mdSession", {
+  value: Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join(""),
+});
 const pending = new Map();
 let rpcSeq = 0;
 function rpc(method, ...params) {
   return new Promise((resolve, reject) => {
     const id = ++rpcSeq;
     pending.set(id, { resolve, reject });
-    window.chrome.webview.postMessage(JSON.stringify({ key: window.__mdKey, id, method, params }));
+    window.chrome.webview.postMessage(JSON.stringify({ key: window.__mdKey, session: window.__mdSession, id, method, params }));
   });
 }
 window.mdReply = (id, ok, value) => {
@@ -176,25 +182,41 @@ function toast(msg) {
   toast.timer = setTimeout(() => t.classList.remove("show"), 6000);
 }
 
-// call runs a Go method and renders the view it returns. The newest call
-// wins: an older one that answers later is ignored (Go also drops its
-// changes), so a slow document never blocks the next click.
-let latest = 0;
+// call runs a Go method and renders the view it returns. Go numbers every
+// view it commits (seq), and only the newest operation commits: the page
+// draws a view only if it is newer than the last one it drew, so it shows
+// what Go thinks is shown even when answers arrive out of order or a call
+// changed nothing in Go (a cancelled dialog). Errors show only for the
+// newest call; "superseded" means a newer operation took over.
+let latest = 0, drawn = 0, busy = 0;
 async function call(method, ...args) {
   const mine = ++latest;
+  busy++;
   document.body.classList.add("loading");
   try {
     const v = await rpc(method, ...args);
-    if (mine === latest && v) render(v);
+    if (v && v.seq > drawn) {
+      drawn = v.seq;
+      render(v);
+    }
   } catch (e) {
     const msg = String(e && e.message || e);
     if (mine === latest && msg !== "superseded") toast(msg);
   } finally {
-    if (mine === latest) document.body.classList.remove("loading");
+    if (--busy === 0) document.body.classList.remove("loading");
   }
 }
 
+// Windows paths ignore case.
+const samePath = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
+
 function render(v) {
+  // "Same document, just scroll", but this page has another one (it missed
+  // the view that showed it): ask Go for everything again.
+  if (v.sameDoc && !samePath(v.path, current)) {
+    call("mdStart");
+    return;
+  }
   if (v.tree !== undefined) renderTree(v.tree, v.truncated);
   $("back").disabled = !v.canBack;
   $("forward").disabled = !v.canForward;
@@ -300,9 +322,7 @@ function treeList(nodes) {
 function markActive() {
   for (const el of side.querySelectorAll("span.active")) el.classList.remove("active");
   if (!current) return;
-  // Windows paths ignore case.
-  const want = current.toLowerCase();
-  const el = [...side.querySelectorAll("span[data-path]")].find((s) => s.dataset.path.toLowerCase() === want);
+  const el = [...side.querySelectorAll("span[data-path]")].find((s) => samePath(s.dataset.path, current));
   if (!el) return;
   el.classList.add("active");
   for (let d = el.closest("details"); d; d = d.parentElement.closest("details")) d.open = true;
