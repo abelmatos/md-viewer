@@ -147,7 +147,7 @@ func TestBridgeErrors(t *testing.T) {
 func TestBridgeApp(t *testing.T) {
 	root, p, a := setup(t)
 	tb := newTestBridge(t)
-	settings := settingsStore{path: filepath.Join(t.TempDir(), "s.json")}
+	settings := &settingsStore{path: filepath.Join(t.TempDir(), "s.json")}
 	tb.RegisterApp(a, p, settings, root)
 
 	tb.send(t, tb.Key(), 1, "mdStart")
@@ -177,6 +177,28 @@ func TestBridgeApp(t *testing.T) {
 	tb.send(t, tb.Key(), 7, "mdSettings")
 	if got := tb.reply(t, 7); !strings.Contains(got, `"sideWidth":300`) {
 		t.Errorf("settings = %s", got)
+	}
+}
+
+// The page sends its toolbar colours for the title bar.
+func TestBridgeTheme(t *testing.T) {
+	root, p, a := setup(t)
+	tb := newTestBridge(t)
+	tb.RegisterApp(a, p, &settingsStore{path: filepath.Join(t.TempDir(), "s.json")}, root)
+	want := Theme{Dark: true, Bg: [3]int{1, 2, 3}, Fg: [3]int{4, 5, 6}, Border: [3]int{7, 8, 9}}
+	tb.send(t, tb.Key(), 1, "mdTheme", want)
+	if got := tb.reply(t, 1); !strings.Contains(got, "mdReply(1,true,null)") {
+		t.Fatalf("theme = %s", got)
+	}
+	tb.mu.Lock()
+	got := p.theme
+	tb.mu.Unlock()
+	if got != want {
+		t.Errorf("platform theme = %+v, want %+v", got, want)
+	}
+	tb.send(t, tb.Key(), 2, "mdTheme", "dark")
+	if got := tb.reply(t, 2); !strings.Contains(got, "mdReply(2,false,") {
+		t.Errorf("bad theme accepted: %s", got)
 	}
 }
 
@@ -218,7 +240,7 @@ func TestCancelledDialogDuringSlowRender(t *testing.T) {
 		t.Fatal(err)
 	}
 	tb := newTestBridge(t)
-	tb.RegisterApp(a, p, settingsStore{path: filepath.Join(t.TempDir(), "s.json")}, root)
+	tb.RegisterApp(a, p, &settingsStore{path: filepath.Join(t.TempDir(), "s.json")}, root)
 	tb.send(t, tb.Key(), 1, "mdStart")
 	drawn := seqOf(t, tb.reply(t, 1))
 

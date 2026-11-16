@@ -37,6 +37,7 @@ const (
 	wmDestroy          = 0x0002
 	wmMove             = 0x0003
 	wmSize             = 0x0005
+	wmClose            = 0x0010
 	wmActivate         = 0x0006
 	wmSetFocus         = 0x0007
 	wmDpiChanged       = 0x02E0

@@ -13,15 +13,6 @@ import (
 // surface. The page sends its colours (mdTheme) when it loads and whenever
 // Windows switches between light and dark.
 
-// themeColors are the toolbar's background, text and border colours as
-// [r, g, b], read from the page's CSS.
-type themeColors struct {
-	Dark   bool   `json:"dark"`
-	Bg     [3]int `json:"bg"`
-	Fg     [3]int `json:"fg"`
-	Border [3]int `json:"border"`
-}
-
 // colorRef packs [r, g, b] as a Win32 COLORREF (0x00BBGGRR).
 func colorRef(c [3]int) uint32 {
 	clamp := func(v int) uint32 { return uint32(max(0, min(255, v))) } //nolint:gosec // G115: clamped to 0..255
@@ -44,7 +35,7 @@ func setDarkTitleBar(hwnd uintptr, dark bool) {
 }
 
 // applyTheme paints the title bar in the page's toolbar colours.
-func applyTheme(hwnd uintptr, t themeColors) {
+func applyTheme(hwnd uintptr, t Theme) {
 	setDarkTitleBar(hwnd, t.Dark)
 	dwmSet(hwnd, windows.DWMWA_CAPTION_COLOR, colorRef(t.Bg))
 	dwmSet(hwnd, windows.DWMWA_TEXT_COLOR, colorRef(t.Fg))

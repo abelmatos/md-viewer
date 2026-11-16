@@ -170,7 +170,7 @@ func decode(params []json.RawMessage, dst ...any) error {
 // RegisterApp adds the viewer's methods. initial is the file or folder from
 // the command line, shown by the first mdStart; later calls (after the page
 // reloaded) resume the current state.
-func (b *Bridge) RegisterApp(app *App, platform Platform, settings settingsStore, initial string) {
+func (b *Bridge) RegisterApp(app *App, platform Platform, settings *settingsStore, initial string) {
 	var started atomic.Bool
 	b.register("mdStart", func(p []json.RawMessage) (any, error) {
 		if err := decode(p); err != nil {
@@ -233,6 +233,14 @@ func (b *Bridge) RegisterApp(app *App, platform Platform, settings settingsStore
 	}
 	b.register("mdPickFile", pick(platform.PickFile))
 	b.register("mdPickFolder", pick(platform.PickFolder))
+	b.register("mdTheme", func(p []json.RawMessage) (any, error) {
+		var t Theme
+		if err := decode(p, &t); err != nil {
+			return nil, err
+		}
+		platform.SetTheme(t)
+		return nil, nil
+	})
 	b.register("mdSettings", func(p []json.RawMessage) (any, error) {
 		if err := decode(p); err != nil {
 			return nil, err

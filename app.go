@@ -26,6 +26,17 @@ type Platform interface {
 	// Reveal shows a file or folder in Explorer.
 	Reveal(path string) error
 	SetTitle(title string)
+	// SetTheme paints the window's title bar in the page's toolbar colours.
+	SetTheme(t Theme)
+}
+
+// Theme is the toolbar's background, text and border colours as [r, g, b],
+// read from the page's CSS, and whether the page is dark.
+type Theme struct {
+	Dark   bool   `json:"dark"`
+	Bg     [3]int `json:"bg"`
+	Fg     [3]int `json:"fg"`
+	Border [3]int `json:"border"`
 }
 
 // View is what the page shows. The page calls the app's methods and renders

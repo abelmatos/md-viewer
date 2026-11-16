@@ -3,7 +3,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -54,12 +53,11 @@ func run(arg string, debug bool) int {
 	if dark {
 		bg = darkBg
 	}
-	hwnd, err := createWindow(colorRef(bg))
+	hwnd, err := createWindow(colorRef(bg), dark)
 	if err != nil {
 		fatal(err)
 		return 1
 	}
-	setDarkTitleBar(hwnd, dark)
 	w := &window{hwnd: hwnd}
 	theWindow = w
 
@@ -74,14 +72,6 @@ func run(arg string, debug bool) int {
 	}
 	p := &winPlatform{w: w, notify: bridge.Notify}
 	bridge.RegisterApp(NewApp(p), p, defaultSettingsStore(), arg)
-	bridge.register("mdTheme", func(params []json.RawMessage) (any, error) {
-		var t themeColors
-		if err := decode(params, &t); err != nil {
-			return nil, err
-		}
-		w.post(func() { applyTheme(hwnd, t) })
-		return nil, nil
-	})
 
 	startupBegin()
 	if err := w.embed(webviewDataDir(), debug, bg, bridge.Handle); err != nil {
@@ -102,12 +92,12 @@ func fatal(err error) {
 }
 
 // defaultSettingsStore uses %APPDATA%\md-viewer\settings.json.
-func defaultSettingsStore() settingsStore {
+func defaultSettingsStore() *settingsStore {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		dir = os.TempDir()
 	}
-	return settingsStore{path: filepath.Join(dir, "md-viewer", "settings.json")}
+	return &settingsStore{path: filepath.Join(dir, "md-viewer", "settings.json")}
 }
 
 // webviewDataDir keeps WebView2's profile out of the exe's folder.
@@ -133,6 +123,8 @@ type winPlatform struct {
 }
 
 func (p *winPlatform) SetTitle(title string) { p.w.post(func() { p.w.setTitle(title) }) }
+
+func (p *winPlatform) SetTheme(t Theme) { p.w.post(func() { applyTheme(p.w.hwnd, t) }) }
 
 func (p *winPlatform) PickFile() (string, error) { return pickPath(p.w.hwnd, false) }
 

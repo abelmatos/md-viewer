@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ type fakePlatform struct {
 	opened []string
 	shown  []string
 	title  string
+	theme  Theme
 }
 
 func (f *fakePlatform) PickFile() (string, error)   { return f.pick, nil }
@@ -24,6 +26,7 @@ func (f *fakePlatform) PickFolder() (string, error) { return f.pick, nil }
 func (f *fakePlatform) OpenURL(u string) error      { f.opened = append(f.opened, u); return nil }
 func (f *fakePlatform) Reveal(p string) error       { f.shown = append(f.shown, p); return nil }
 func (f *fakePlatform) SetTitle(t string)           { f.title = t }
+func (f *fakePlatform) SetTheme(t Theme)            { f.theme = t }
 
 func setup(t *testing.T) (root string, p *fakePlatform, a *App) {
 	t.Helper()
@@ -270,8 +273,33 @@ func TestShellHTML(t *testing.T) {
 	}
 }
 
+// Holding Ctrl+B saves the layout many times at once; every save must
+// succeed and leave a whole file.
+func TestSettingsConcurrentSaves(t *testing.T) {
+	s := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json")}
+	var wg sync.WaitGroup
+	errs := make(chan error, 50)
+	for i := range 50 {
+		wg.Go(func() { errs <- s.Save(Settings{SideWidth: 200 + i, SideHidden: i%2 == 0}) })
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("save: %v", err)
+		}
+	}
+	if got := s.Load(); got.SideWidth < 200 {
+		t.Errorf("after the saves = %+v", got)
+	}
+	left, _ := filepath.Glob(filepath.Join(filepath.Dir(s.path), "*"))
+	if len(left) != 1 {
+		t.Errorf("files left behind: %v", left)
+	}
+}
+
 func TestSettingsStore(t *testing.T) {
-	s := settingsStore{path: filepath.Join(t.TempDir(), "sub", "settings.json")}
+	s := &settingsStore{path: filepath.Join(t.TempDir(), "sub", "settings.json")}
 	if got := s.Load(); got != (Settings{}) {
 		t.Fatalf("missing file = %+v", got)
 	}
@@ -307,7 +335,9 @@ func TestSlowRenderDoesNotBlock(t *testing.T) {
 		_, err := a.Navigate("slow.md", 0)
 		slowDone <- err
 	}()
-	time.Sleep(50 * time.Millisecond) // let the slow render start
+	for a.renderer.Running() == 0 && len(slowDone) == 0 { // the slow render has started
+		time.Sleep(time.Millisecond)
+	}
 
 	start := time.Now()
 	v := must(t)(a.Show(filepath.Join(root, "notes", "a.md"), 0))
