@@ -100,11 +100,13 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		_, _, _ = procSetWindowPos.Call(hwnd, 0, x, y, cx, cy, swpNoZOrder|swpNoActivate)
 		return 0
 	case wmClose:
+		// Closing, also before the page's first load: what is logged from
+		// now on is not a startup failure, so no message box.
+		startupDone()
 		// Closed while WebView2 is still starting: go-webview2's Embed
 		// waits in its own message loop and would crash on the WM_QUIT
 		// that destroying the window posts, so end here.
 		if w == nil || w.browser == nil {
-			startupDone() // not a startup failure; no message box
 			log.Print("closed during startup")
 			os.Exit(0)
 		}
